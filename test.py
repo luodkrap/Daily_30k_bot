@@ -1,21 +1,26 @@
 import os
+import ccxt
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
+BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+exchange = ccxt.binance({
+    "apiKey": BINANCE_API_KEY,
+    "secret": BINANCE_SECRET_KEY,
+    "enableRateLimit": True,
+})
+
 
 def get_btc_price():
-    # TODO: 바이낸스 API 키 발급 후 아래 주석 해제, 더미 데이터 제거
-    # url = "https://api.binance.com/api/v3/ticker/price"
-    # response = requests.get(url, params={"symbol": "BTCUSDT"})
-    # response.raise_for_status()
-    # price = float(response.json()["price"])
-    # return f"{price:,.2f}"
-    return "99,999.00"  # 더미 데이터
+    ticker = exchange.fetch_ticker("BTC/USDT")
+    price = ticker["last"]
+    return f"{price:,.2f}"
 
 
 def send_telegram_message(text):
