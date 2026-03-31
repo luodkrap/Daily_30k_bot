@@ -10,6 +10,16 @@
             "statusMessage": "Python 구문 검사 중..."
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); echo \"$f\" | grep -q '\\.py$' && cd /Users/doulz/Desktop/Daily_30k_bot && source venv/bin/activate && python test.py unit 2>&1 || true",
+            "statusMessage": "단위 테스트 실행 중..."
+          }
+        ]
       }
     ],
     "PreToolUse": [
