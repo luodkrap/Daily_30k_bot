@@ -1,3 +1,21 @@
+"""
+shared_state.py
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+역할:
+  봇의 모든 실시간 상태를 관리하는 단일 데이터 클래스 BotState.
+  스캐너, 엔진, 텔레그램 봇이 공유하는 전역 상태.
+
+주요 필드:
+  - kill_event: 킬 스위치 (asyncio.Event) — 모든 루프 즉시 중단
+  - target_coin: 현재 거래 대상 코인
+  - daily_pnl, trade_count: 일일 손익 및 거래 횟수
+  - is_market_healthy: 시장 상태 (200MA 필터, 연속 손실 등)
+  - should_stop_profit property: 수익 중단 조건 (목표 도달 또는 시장 악화)
+
+사용처:
+  screener.py, main.py (executor 뼈대), 텔레그램 봇 함수들
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
 import asyncio
 from dataclasses import dataclass, field
 

@@ -1,3 +1,26 @@
+"""
+notifier.py
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+역할:
+  텔레그램 API를 통해 봇 이벤트(거래, 킬 스위치, 오류, 상태)를
+  실시간으로 사용자에게 알리는 비동기 알림 모듈.
+
+함수:
+  - send(text): 기본 메시지 전송
+  - notify_trade(): 진입/청산 알림
+  - notify_daily_stop(): 수익/손실로 인한 일일 중단
+  - notify_kill_switch(): 킬 스위치 발동
+  - notify_error(): 오류 발생 즉시 보고
+  - notify_status(): /status 커맨드에 대한 현황 보고
+
+특징:
+  - aiohttp로 비동기 처리 (블로킹 없음)
+  - 모든 함수는 asyncio 코루틴
+
+사용처:
+  main.py, screener.py, executor.py (Phase 4), 텔레그램 봇 핸들러
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
 import aiohttp
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 

@@ -1,3 +1,26 @@
+"""
+main.py
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+역할:
+  Daily 30K 봇의 진입점.
+  3개 컴포넌트(스캐너, 엔진, 텔레그램 봇)를 asyncio.gather()로 동시 실행.
+  킬 이벤트 하나로 모든 루프를 즉시 중단시키는 마스터 컨트롤러.
+
+3개 코루틴:
+  1. run_screener(): 매시간 전 종목 스캔 → state.target_coin 업데이트
+  2. run_executor(): 스캐너가 지정한 코인의 그리드 매매 실행 (Phase 4 구현)
+  3. run_telegram_bot(): /status, /stop, /seed 명령어 처리
+
+특징:
+  - BINANCE_API_KEY, SECRET_KEY로 바이낸스 비동기 exchange 초기화
+  - state = BotState() 단일 인스턴스로 3개 컴포넌트가 상태 공유
+  - Exception 시 notify_error로 즉시 텔레그램 보고
+  - finally에서 exchange.close() 정리
+
+실행:
+  python main.py
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
 import asyncio
 import ccxt.async_support as ccxt_async
 from config import BINANCE_API_KEY, BINANCE_SECRET_KEY
