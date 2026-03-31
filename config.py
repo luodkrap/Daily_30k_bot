@@ -1,0 +1,42 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ─── API 키 ───────────────────────────────────────────────
+BINANCE_API_KEY    = os.getenv("BINANCE_API_KEY")
+BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
+TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
+
+# ─── 시드머니 ─────────────────────────────────────────────
+# .env의 SEED 값을 읽습니다. 텔레그램 /seed 커맨드로 변경 가능.
+SEED = int(os.getenv("SEED", "3000000"))  # 원화 (KRW)
+
+# ─── 수익 중단 로직 ───────────────────────────────────────
+DAILY_TARGET     = SEED * 0.010  # 1.0% → 30,000원 (하드 스탑)
+DAILY_MIN_PROFIT = SEED * 0.005  # 0.5% → 15,000원 (조기 중단 기준)
+DAILY_LOSS_LIMIT = SEED * 0.030  # 3.0% → 90,000원 (킬 스위치)
+
+# ─── 리스크 관리 (고정 — 자동 조정 금지) ─────────────────
+MAX_POSITION_RATE = 0.010        # 1% Rule: 한 포지션 최대 시드의 1%
+STOP_LOSS_RATE    = 0.020        # 개별 손절매 2%
+
+# ─── 스캐너 파라미터 (params.json으로 자동 조정 대상) ──────
+SCANNER_INTERVAL_SEC  = 3600    # 스캔 주기 (초) — 기본 1시간
+MIN_VOLUME_USD        = 100_000_000  # 최소 24h 거래량 $100M
+ATR_MIN_RATE          = 0.005   # ATR 최소 비율 (변동성 하한)
+ATR_MAX_RATE          = 0.050   # ATR 최대 비율 (펌프앤덤프 차단 상한)
+
+# ─── 그리드 파라미터 (params.json으로 자동 조정 대상) ──────
+GRID_COUNT     = 5              # 그리드 레벨 수
+GRID_SPACING   = 0.005          # 그리드 간격 비율 (0.5%)
+
+# ─── 적응형 파라미터 기준 ─────────────────────────────────
+ADAPTIVE_SAMPLE_SIZE  = 10      # 몇 회 거래 후 파라미터 재조정할지
+WIN_RATE_LOW          = 0.40    # 승률 이 미만이면 그리드 간격 확대
+WIN_RATE_HIGH         = 0.60    # 승률 이 이상이면 그리드 간격 축소
+
+# ─── 시장 악화 감지 ──────────────────────────────────────
+MARKET_FILTER_MA      = 200     # BTC 200MA 기준
+RECENT_LOSS_STREAK    = 3       # 연속 손실 n회 시 경고
