@@ -21,7 +21,7 @@ import asyncio
 import ccxt.async_support as ccxt_async
 from config import (
     SCANNER_INTERVAL_SEC,
-    MIN_VOLUME_USD,
+    MIN_VOLUME_USD, MIN_PRICE_USD,
     ATR_MIN_RATE, ATR_MAX_RATE,
     SCANNER_SEMAPHORE, SCANNER_CANDLE_LIMIT, SCANNER_TOP_N,
     PUMP_THRESHOLD_3H, PUMP_THRESHOLD_6H, PUMP_VOLUME_SPIKE,
@@ -78,7 +78,7 @@ async def _scan(exchange: ccxt_async.binance) -> list[dict]:
     # 1단계: 전체 티커 수신 (1회 API 호출)
     tickers = await exchange.fetch_tickers()
 
-    # 2단계: CPU 사전 필터 (USDT 페어, 스테이블/레버리지 제거, $100M)
+    # 2단계: CPU 사전 필터 (USDT 페어, 스테이블/레버리지 제거, $100M, 최소 가격)
     symbols = _pre_filter(tickers)
     if not symbols:
         return []
@@ -143,6 +143,10 @@ def _pre_filter(tickers: dict) -> list[str]:
         # 현재가 유효성
         last = ticker.get("last") or 0
         if last <= 0:
+            continue
+
+        # 최소 가격 필터 — $0.10 미만 저가 코인은 그리드 매매 부적합
+        if last < MIN_PRICE_USD:
             continue
 
         result.append(symbol)

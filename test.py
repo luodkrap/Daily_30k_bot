@@ -99,6 +99,7 @@ def test_pre_filter():
         "XRP/BTC":     {"quoteVolume": 200_000_000, "last": 0.5},    # USDT 아님 → 제외
         "DOGE/USDT":   {"quoteVolume": 5_000_000,   "last": 0.1},    # 거래량 미달 → 제외
         "SHIB/USDT":   {"quoteVolume": 150_000_000, "last": None},   # 가격 없음 → 제외
+        "NIGHT/USDT":  {"quoteVolume": 200_000_000, "last": 0.05},   # 저가 코인 → 제외
     }
     result = _pre_filter(mock_tickers)
     assert "BTC/USDT" in result, "BTC/USDT가 필터에서 제외됨"
@@ -108,6 +109,7 @@ def test_pre_filter():
     assert "XRP/BTC" not in result, "비USDT 페어가 통과됨"
     assert "DOGE/USDT" not in result, "거래량 미달 코인이 통과됨"
     assert "SHIB/USDT" not in result, "가격 없는 코인이 통과됨"
+    assert "NIGHT/USDT" not in result, "저가 코인($0.05)이 통과됨"
     print(f"  [PASS] _pre_filter: {len(result)}개 통과 ({result})")
 
 

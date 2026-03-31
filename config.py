@@ -55,6 +55,7 @@ WIN_RATE_LOW          = 0.40    # 승률 이 미만이면 그리드 간격 확�
 WIN_RATE_HIGH         = 0.60    # 승률 이 이상이면 그리드 간격 축소
 
 # ─── 스캐너 세부 파라미터 ────────────────────────────────
+MIN_PRICE_USD         = 0.10    # 최소 코인 가격 $0.10 (저가 코인 그리드 매매 부적합)
 SCANNER_SEMAPHORE     = 10      # 병렬 캔들 조회 동시 요청 수
 SCANNER_CANDLE_LIMIT  = 15      # ATR14 계산용 캔들 수 (여유 1개)
 SCANNER_TOP_N         = 5       # 최종 후보 상위 N개
