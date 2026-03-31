@@ -54,6 +54,14 @@ ADAPTIVE_SAMPLE_SIZE  = 10      # 몇 회 거래 후 파라미터 재조정할�
 WIN_RATE_LOW          = 0.40    # 승률 이 미만이면 그리드 간격 확대
 WIN_RATE_HIGH         = 0.60    # 승률 이 이상이면 그리드 간격 축소
 
+# ─── 스캐너 세부 파라미터 ────────────────────────────────
+SCANNER_SEMAPHORE     = 10      # 병렬 캔들 조회 동시 요청 수
+SCANNER_CANDLE_LIMIT  = 15      # ATR14 계산용 캔들 수 (여유 1개)
+SCANNER_TOP_N         = 5       # 최종 후보 상위 N개
+PUMP_THRESHOLD_3H     = 0.07    # 3시간 내 급등 기준 7%
+PUMP_THRESHOLD_6H     = 0.10    # 6시간 내 급등 기준 10%
+PUMP_VOLUME_SPIKE     = 5.0     # 거래량 스파이크 배수 기준
+
 # ─── 시장 악화 감지 ──────────────────────────────────────
 MARKET_FILTER_MA      = 200     # BTC 200MA 기준
 RECENT_LOSS_STREAK    = 3       # 연속 손실 n회 시 경고

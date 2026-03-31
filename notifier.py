@@ -11,6 +11,7 @@ notifier.py
   - notify_daily_stop(): 수익/손실로 인한 일일 중단
   - notify_kill_switch(): 킬 스위치 발동
   - notify_error(): 오류 발생 즉시 보고
+  - notify_scan_result(): 스캐너 타겟 선정 결과 보고
   - notify_status(): /status 커맨드에 대한 현황 보고
 
 특징:
@@ -51,6 +52,18 @@ async def notify_kill_switch() -> None:
 
 async def notify_error(context: str, error: Exception) -> None:
     await send(f"[오류] {context}\n{type(error).__name__}: {error}")
+
+
+async def notify_scan_result(candidate: dict) -> None:
+    msg = (
+        f"[스캐너] 타겟 선정\n"
+        f"코인: {candidate['symbol']}\n"
+        f"점수: {candidate['score']:.3f}\n"
+        f"ATR 비율: {candidate['atr_rate']*100:.2f}%\n"
+        f"24h 거래량: ${candidate['volume']:,.0f}\n"
+        f"현재가: ${candidate['last']:,.4f}"
+    )
+    await send(msg)
 
 
 async def notify_status(state) -> None:
