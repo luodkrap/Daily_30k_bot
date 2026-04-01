@@ -66,3 +66,10 @@ PUMP_VOLUME_SPIKE     = 5.0     # 거래량 스파이크 배수 기준
 # ─── 시장 악화 감지 ──────────────────────────────────────
 MARKET_FILTER_MA      = 200     # BTC 200MA 기준
 RECENT_LOSS_STREAK    = 3       # 연속 손실 n회 시 경고
+
+# ─── 거래 비용 및 초기 매수 ──────────────────────────
+FEE_RATE          = 0.001     # 바이낸스 현물 수수료 0.1%
+INITIAL_BUY_RATIO = 0.50      # 투입금 중 시장가 즉시 매수 비율 50%
+MIN_PROFIT_RATIO  = 0.001     # 최소 순수익 기준 0.1% (수수료 제외 후)
+REGRID_ENABLED    = True      # 상단 이탈 시 리그리딩 ON/OFF
+KRW_RATE          = 1350      # 원/달러 환율 기본값 (실시간 갱신 대상)

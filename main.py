@@ -89,7 +89,7 @@ async def run_telegram_bot(state: BotState) -> None:
         try:
             balance = await state.exchange.fetch_balance()
             usdt = balance.get("USDT", {}).get("free", 0)
-            krw_approx = usdt * 1350  # 대략적인 환율
+            krw_approx = usdt * config.KRW_RATE
             if new_seed > krw_approx * 1.1:
                 await update.message.reply_text(
                     f"경고: 설정 시드({new_seed:,}원)가 "
