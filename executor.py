@@ -251,3 +251,43 @@ class GridEngine:
                 pass
         self.buy_orders.clear()
         self.sell_orders.clear()
+
+
+async def update_market_filter(state: BotState, exchange) -> None:
+    """BTC 200MA 필터 갱신. 30분마다 호출."""
+    try:
+        ohlcv = await _retry_api(exchange.fetch_ohlcv, "BTC/USDT", "1d", limit=201)
+        if len(ohlcv) < 201:
+            return
+        closes = [c[4] for c in ohlcv]
+        ma_200 = sum(closes[:-1]) / 200
+        current = closes[-1]
+        was_healthy = state.is_market_healthy
+        state.is_market_healthy = current >= ma_200
+        if was_healthy and not state.is_market_healthy:
+            await send(f"[시장 필터] BTC 200MA 하회 — 신규 진입 차단\n"
+                       f"BTC: ${current:,.0f} < MA200: ${ma_200:,.0f}")
+    except Exception as e:
+        await notify_error("MarketFilter", e)
+
+
+async def update_krw_rate() -> None:
+    """업비트 공개 API로 USDT/KRW 실시간 환율 갱신. 30분마다 호출."""
+    import config
+    try:
+        import aiohttp
+        url = "https://api.upbit.com/v1/ticker?markets=KRW-USDT"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data and len(data) > 0:
+                        new_rate = data[0].get("trade_price")
+                        if new_rate and 1000 < new_rate < 2000:
+                            old_rate = config.KRW_RATE
+                            config.KRW_RATE = new_rate
+                            if abs(old_rate - new_rate) > 10:
+                                await send(f"[환율] KRW/USDT 갱신: {old_rate:,.0f} → {new_rate:,.0f}")
+    except Exception as e:
+        # 환율 갱신 실패 시 기존 값 유지 (안전)
+        print(f"[KRW] 환율 갱신 실패 (기존값 유지): {e}")

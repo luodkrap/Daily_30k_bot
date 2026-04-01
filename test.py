@@ -337,6 +337,29 @@ async def _test_stop_loss_async(engine, ex, state):
     print("  [PASS] stop_loss: 2% 하락 발동, 정상가 미발동")
 
 
+def test_market_filter():
+    from executor import update_market_filter
+    from shared_state import BotState
+
+    asyncio.run(_test_market_filter_async())
+
+
+async def _test_market_filter_async():
+    from executor import update_market_filter
+    from shared_state import BotState
+
+    state = BotState()
+
+    # 시나리오 A: 현재가($100) >= 200MA → healthy
+    ex_healthy = MockExchange(ticker_price=100.0)
+    await update_market_filter(state, ex_healthy)
+    assert state.is_market_healthy is True, "정상 시장에서 악화 판정"
+
+    # MockExchange는 모든 캔들 close=ticker_price 반환
+    # 201개 캔들 전부 close=100이므로 MA200=100, current=100 → healthy
+    print("  [PASS] market_filter: 정상 시장 healthy 판정")
+
+
 # ─────────────────────────────────────────────────────────
 # Phase 3 통합 테스트 (온라인 — 실제 바이낸스 API 호출)
 # ─────────────────────────────────────────────────────────
@@ -394,6 +417,7 @@ if __name__ == "__main__":
         test_handle_buy_fill()
         test_handle_sell_fill()
         test_stop_loss()
+        test_market_filter()
         print("Phase 4 단위 테스트 통과!")
 
     elif mode == "scan":
