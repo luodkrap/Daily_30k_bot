@@ -114,6 +114,98 @@ def test_pre_filter():
 
 
 # ─────────────────────────────────────────────────────────
+# Phase 4 단위 테스트 (오프라인 — MockExchange)
+# ─────────────────────────────────────────────────────────
+
+class MockExchange:
+    """ccxt async exchange 모의 객체. Phase 4 테스트용."""
+
+    def __init__(self, ticker_price=100.0, usdt_balance=2222.0):
+        self._order_id = 0
+        self._orders = {}
+        self._ticker_price = ticker_price
+        self._usdt_balance = usdt_balance
+        self._open_order_ids = set()
+
+    async def fetch_ticker(self, symbol):
+        return {"last": self._ticker_price}
+
+    async def fetch_balance(self):
+        return {"USDT": {"free": self._usdt_balance}}
+
+    async def create_order(self, symbol, type_, side, amount, price=None):
+        self._order_id += 1
+        oid = str(self._order_id)
+        fill_price = price if price else self._ticker_price
+        order = {
+            "id": oid,
+            "symbol": symbol,
+            "type": type_,
+            "side": side,
+            "amount": amount,
+            "price": price,
+            "filled": amount,
+            "average": fill_price,
+            "status": "closed" if type_ == "market" else "open",
+        }
+        self._orders[oid] = order
+        if order["status"] == "open":
+            self._open_order_ids.add(oid)
+        return order
+
+    async def fetch_open_orders(self, symbol):
+        return [self._orders[oid] for oid in self._open_order_ids if oid in self._orders]
+
+    async def cancel_order(self, order_id, symbol):
+        if order_id in self._orders:
+            self._orders[order_id]["status"] = "canceled"
+            self._open_order_ids.discard(order_id)
+
+    async def fetch_ohlcv(self, symbol, timeframe, limit=None):
+        return [[i, 99, 101, 99, self._ticker_price, 1_000_000] for i in range(limit or 201)]
+
+    def simulate_fill(self, order_id):
+        """테스트 헬퍼: 지정가 주문을 체결 상태로 변경."""
+        if order_id in self._orders:
+            self._orders[order_id]["status"] = "closed"
+            self._open_order_ids.discard(order_id)
+
+
+def test_validate_fees():
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange()
+    engine = GridEngine("ETH/USDT", ex, state)
+
+    # 기본 설정: GRID_SPACING=0.5%, FEE_RATE=0.1% → 순수익 0.3% > 0.1% → True
+    assert engine.validate_fees() is True, "기본 설정에서 수수료 검증 실패"
+    print("  [PASS] validate_fees: 기본 설정 통과")
+
+
+def test_calc_position_size():
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange()
+    engine = GridEngine("ETH/USDT", ex, state)
+
+    # SEED=3,000,000 KRW, KRW_RATE=1350 → seed_usdt=$2222
+    # max_loss = $2222 * 0.01 = $22.22
+    # max_invest = $22.22 / 0.02 = $1111
+    size = engine.calc_position_size(usdt_balance=5000.0)
+    assert 1100 < size < 1120, f"포지션 사이징 오류: {size}"
+
+    # 잔고가 부족한 경우 잔고로 제한
+    size_low = engine.calc_position_size(usdt_balance=500.0)
+    assert size_low == 500.0, f"잔고 제한 실패: {size_low}"
+
+    print(f"  [PASS] calc_position_size: 정상={size:.2f}, 잔고제한={size_low:.2f}")
+
+
+# ─────────────────────────────────────────────────────────
 # Phase 3 통합 테스트 (온라인 — 실제 바이낸스 API 호출)
 # ─────────────────────────────────────────────────────────
 
@@ -161,6 +253,12 @@ if __name__ == "__main__":
         test_is_pumped()
         test_pre_filter()
         print("모든 단위 테스트 통과!")
+
+    elif mode == "unit4":
+        print("=== Phase 4 단위 테스트 ===")
+        test_validate_fees()
+        test_calc_position_size()
+        print("Phase 4 단위 테스트 통과!")
 
     elif mode == "scan":
         # 통합 테스트 실행 (온라인)
