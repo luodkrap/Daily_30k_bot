@@ -8,12 +8,12 @@
 
 ## 2. 파일 구조
 
-| 파일 | 변경 | 내용 |
-|---|---|---|
-| `executor.py` | **신규** | GridEngine 클래스 + run_executor 루프 |
-| `config.py` | 수정 | FEE_RATE, INITIAL_BUY_RATIO 등 상수 추가 |
-| `shared_state.py` | 수정 | BotState 포지션 추적 필드 보강 |
-| `main.py` | 수정 | run_executor를 executor.py에서 import, sleep 1s |
+| 파일              | 변경     | 내용                                            |
+| ----------------- | -------- | ----------------------------------------------- |
+| `executor.py`     | **신규** | GridEngine 클래스 + run_executor 루프           |
+| `config.py`       | 수정     | FEE_RATE, INITIAL_BUY_RATIO 등 상수 추가        |
+| `shared_state.py` | 수정     | BotState 포지션 추적 필드 보강                  |
+| `main.py`         | 수정     | run_executor를 executor.py에서 import, sleep 1s |
 
 ## 3. config.py 추가 상수
 
@@ -80,6 +80,7 @@ class GridEngine:
 ### 5.3 초기 매수 (Initial Buy)
 
 현물 매매이므로 매도 그리드 물량 확보가 필요:
+
 1. 1% Rule로 최대 투입금 계산: `max_invest = (SEED_USDT × MAX_POSITION_RATE) / STOP_LOSS_RATE`
 2. 시장가 매수: `max_invest × INITIAL_BUY_RATIO` (50%)
 3. 매수한 물량을 매도 그리드 5개에 균등 배분
@@ -88,16 +89,19 @@ class GridEngine:
 ### 5.4 수수료 검증
 
 진입 전 체크: `GRID_SPACING - (FEE_RATE × 2) >= MIN_PROFIT_RATIO`
+
 - 0.5% - 0.2% = 0.3% >= 0.1% → OK
 - 실패 시 진입 거부 + 텔레그램 알림
 
 ### 5.5 체결 대응 (handle_fill)
 
 **매수 체결:**
+
 - 보유량·평균가 갱신
 - 체결가 × (1 + GRID_SPACING) 에 매도 지정가 주문 생성
 
 **매도 체결:**
+
 - 실현 수익 계산: `(매도가 - 매수가) × 수량 - 왕복수수료`
 - state.daily_pnl += 실현 수익
 - state.trade_count += 1 (수익이면 win_count도 +1)
@@ -106,12 +110,14 @@ class GridEngine:
 ### 5.6 상단 이탈 리그리딩
 
 조건: 모든 매도 주문 체결 + 보유량 = 0
+
 - REGRID_ENABLED=True → 현재가 fetch → regrid() 호출
 - REGRID_ENABLED=False → 대기 (스캐너의 다음 타겟 기다림)
 
 ### 5.7 동적 코인 스위칭
 
 매 폴링마다 `state.target_coin != engine.symbol` 체크:
+
 1. 현재 포지션 있음 → 시장가 전량 매도 + cancel_all()
 2. 손익 기록
 3. 새 GridEngine 생성 → setup_grid()
