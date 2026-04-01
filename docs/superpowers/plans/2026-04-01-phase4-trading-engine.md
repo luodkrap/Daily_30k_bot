@@ -14,22 +14,23 @@
 
 ## 파일 구조
 
-| 파일 | 변경 | 역할 |
-|---|---|---|
-| `config.py` | 수정 | FEE_RATE, INITIAL_BUY_RATIO, MIN_PROFIT_RATIO, REGRID_ENABLED, KRW_RATE 추가 |
-| `executor.py` | **신규** | GridEngine 클래스 + update_market_filter + run_executor |
-| `main.py` | 수정 | run_executor를 executor.py에서 import, 뼈대 제거 |
-| `test.py` | 수정 | MockExchange + Phase 4 단위 테스트 추가 |
-| `TODO.md` | 수정 | Phase 4 항목 체크 |
+| 파일          | 변경     | 역할                                                                         |
+| ------------- | -------- | ---------------------------------------------------------------------------- |
+| `config.py`   | 수정     | FEE_RATE, INITIAL_BUY_RATIO, MIN_PROFIT_RATIO, REGRID_ENABLED, KRW_RATE 추가 |
+| `executor.py` | **신규** | GridEngine 클래스 + update_market_filter + run_executor                      |
+| `main.py`     | 수정     | run_executor를 executor.py에서 import, 뼈대 제거                             |
+| `test.py`     | 수정     | MockExchange + Phase 4 단위 테스트 추가                                      |
+| `TODO.md`     | 수정     | Phase 4 항목 체크                                                            |
 
 ---
 
 ### Task 1: config.py 상수 추가
 
 **Files:**
+
 - Modify: `config.py:48` (마지막 섹션 뒤에 추가)
 
-- [ ] **Step 1: config.py에 Phase 4 상수 추가**
+- [x] **Step 1: config.py에 Phase 4 상수 추가**
 
 ```python
 # ─── 거래 비용 및 초기 매수 ──────────────────────────
@@ -40,16 +41,16 @@ REGRID_ENABLED    = True      # 상단 이탈 시 리그리딩 ON/OFF
 KRW_RATE          = 1350      # 원/달러 환율 (USDT ≈ USD)
 ```
 
-- [ ] **Step 2: 기존 main.py 하드코딩 환율을 KRW_RATE 참조로 교체**
+- [x] **Step 2: 기존 main.py 하드코딩 환율을 KRW_RATE 참조로 교체**
 
 `main.py:92`의 `krw_approx = usdt * 1350` → `krw_approx = usdt * config.KRW_RATE`
 
-- [ ] **Step 3: import 확인**
+- [x] **Step 3: import 확인**
 
 Run: `python -c "from config import FEE_RATE, INITIAL_BUY_RATIO, MIN_PROFIT_RATIO, REGRID_ENABLED, KRW_RATE; print('OK')"`
 Expected: `OK`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add config.py main.py
@@ -61,10 +62,11 @@ git commit -m "feat: Phase 4 거래 비용 및 초기 매수 상수 추가 (conf
 ### Task 2: MockExchange + GridEngine 뼈대 (수수료 검증, 포지션 사이징)
 
 **Files:**
+
 - Create: `executor.py`
 - Modify: `test.py`
 
-- [ ] **Step 1: test.py에 MockExchange와 Phase 4 테스트 추가**
+- [x] **Step 1: test.py에 MockExchange와 Phase 4 테스트 추가**
 
 test.py 하단, `test_pre_filter()` 함수 아래에 추가:
 
@@ -161,12 +163,12 @@ def test_calc_position_size():
     print(f"  [PASS] calc_position_size: 정상={size:.2f}, 잔고제한={size_low:.2f}")
 ```
 
-- [ ] **Step 2: 테스트 실행 → 실패 확인**
+- [x] **Step 2: 테스트 실행 → 실패 확인**
 
 Run: `python test.py unit4`
 Expected: `ModuleNotFoundError: No module named 'executor'`
 
-- [ ] **Step 3: executor.py 생성 — GridEngine 뼈대**
+- [x] **Step 3: executor.py 생성 — GridEngine 뼈대**
 
 ```python
 """
@@ -243,7 +245,7 @@ class GridEngine:
         return min(max_invest, usdt_balance)
 ```
 
-- [ ] **Step 4: 테스트 실행 → 통과 확인**
+- [x] **Step 4: 테스트 실행 → 통과 확인**
 
 test.py `if __name__` 블록에 `unit4` 모드 추가:
 
@@ -258,7 +260,7 @@ test.py `if __name__` 블록에 `unit4` 모드 추가:
 Run: `python test.py unit4`
 Expected: 두 테스트 모두 `[PASS]`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add executor.py test.py
@@ -270,10 +272,11 @@ git commit -m "feat: GridEngine 뼈대 — 수수료 검증 + 1% Rule 포지션 
 ### Task 3: setup_grid() — 초기 매수 + 그리드 배치
 
 **Files:**
+
 - Modify: `executor.py` (GridEngine에 메서드 추가)
 - Modify: `test.py` (테스트 추가)
 
-- [ ] **Step 1: test.py에 setup_grid 테스트 추가**
+- [x] **Step 1: test.py에 setup_grid 테스트 추가**
 
 ```python
 def test_setup_grid():
@@ -314,12 +317,12 @@ async def _test_setup_grid_async(engine, ex):
           f"매도={len(engine.sell_orders)}개, 매수={len(engine.buy_orders)}개")
 ```
 
-- [ ] **Step 2: 테스트 실행 → 실패 확인**
+- [x] **Step 2: 테스트 실행 → 실패 확인**
 
 Run: `python test.py unit4`
 Expected: `AttributeError: 'GridEngine' object has no attribute 'setup_grid'`
 
-- [ ] **Step 3: executor.py에 setup_grid() 구현**
+- [x] **Step 3: executor.py에 setup_grid() 구현**
 
 GridEngine 클래스 내부, `calc_position_size` 아래에 추가:
 
@@ -383,7 +386,7 @@ GridEngine 클래스 내부, `calc_position_size` 아래에 추가:
         )
 ```
 
-- [ ] **Step 4: test.py unit4 모드에 테스트 추가 & 실행**
+- [x] **Step 4: test.py unit4 모드에 테스트 추가 & 실행**
 
 ```python
     elif mode == "unit4":
@@ -397,7 +400,7 @@ GridEngine 클래스 내부, `calc_position_size` 아래에 추가:
 Run: `python test.py unit4`
 Expected: 세 테스트 모두 `[PASS]`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add executor.py test.py
@@ -409,10 +412,11 @@ git commit -m "feat: setup_grid — 초기 시장가 매수 + 매도/매수 그�
 ### Task 4: monitor_orders + handle_fill — 체결 감지 & 대응
 
 **Files:**
+
 - Modify: `executor.py`
 - Modify: `test.py`
 
-- [ ] **Step 1: test.py에 체결 감지 테스트 추가**
+- [x] **Step 1: test.py에 체결 감지 테스트 추가**
 
 ```python
 def test_handle_buy_fill():
@@ -472,12 +476,12 @@ async def _test_handle_sell_fill_async(engine, ex, state):
     print(f"  [PASS] handle_sell_fill: 매도 체결 → PnL={state.daily_pnl:,.0f}원, 매수 재배치")
 ```
 
-- [ ] **Step 2: 테스트 실행 → 실패 확인**
+- [x] **Step 2: 테스트 실행 → 실패 확인**
 
 Run: `python test.py unit4`
 Expected: `AttributeError: 'GridEngine' object has no attribute 'monitor_orders'`
 
-- [ ] **Step 3: executor.py에 monitor_orders + handle_fill 구현**
+- [x] **Step 3: executor.py에 monitor_orders + handle_fill 구현**
 
 GridEngine 클래스 내부, `setup_grid` 아래에 추가:
 
@@ -554,7 +558,7 @@ GridEngine 클래스 내부, `setup_grid` 아래에 추가:
         }
 ```
 
-- [ ] **Step 4: test.py unit4에 새 테스트 추가 & 실행**
+- [x] **Step 4: test.py unit4에 새 테스트 추가 & 실행**
 
 ```python
         test_handle_buy_fill()
@@ -564,7 +568,7 @@ GridEngine 클래스 내부, `setup_grid` 아래에 추가:
 Run: `python test.py unit4`
 Expected: 다섯 테스트 모두 `[PASS]`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add executor.py test.py
@@ -576,10 +580,11 @@ git commit -m "feat: monitor_orders — 1초 폴링 체결 감지 + 매수/매�
 ### Task 5: check_stop_loss + cancel_all — 손절매
 
 **Files:**
+
 - Modify: `executor.py`
 - Modify: `test.py`
 
-- [ ] **Step 1: test.py에 손절 테스트 추가**
+- [x] **Step 1: test.py에 손절 테스트 추가**
 
 ```python
 def test_stop_loss():
@@ -616,12 +621,12 @@ async def _test_stop_loss_async(engine, ex, state):
     print("  [PASS] stop_loss: 2% 하락 발동, 정상가 미발동")
 ```
 
-- [ ] **Step 2: 테스트 실행 → 실패 확인**
+- [x] **Step 2: 테스트 실행 → 실패 확인**
 
 Run: `python test.py unit4`
 Expected: `AttributeError: 'GridEngine' object has no attribute 'check_stop_loss'`
 
-- [ ] **Step 3: executor.py에 check_stop_loss + cancel_all 구현**
+- [x] **Step 3: executor.py에 check_stop_loss + cancel_all 구현**
 
 ```python
     # ── 손절매 ───────────────────────────────────────
@@ -673,7 +678,7 @@ Expected: `AttributeError: 'GridEngine' object has no attribute 'check_stop_loss
         self.sell_orders.clear()
 ```
 
-- [ ] **Step 4: test.py unit4에 테스트 추가 & 실행**
+- [x] **Step 4: test.py unit4에 테스트 추가 & 실행**
 
 ```python
         test_stop_loss()
@@ -682,7 +687,7 @@ Expected: `AttributeError: 'GridEngine' object has no attribute 'check_stop_loss
 Run: `python test.py unit4`
 Expected: 여섯 테스트 모두 `[PASS]`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add executor.py test.py
@@ -694,10 +699,11 @@ git commit -m "feat: check_stop_loss — 진입가 -2% 하락 시 전량 시장�
 ### Task 6: update_market_filter — 200MA 시장 필터
 
 **Files:**
+
 - Modify: `executor.py`
 - Modify: `test.py`
 
-- [ ] **Step 1: test.py에 200MA 필터 테스트 추가**
+- [x] **Step 1: test.py에 200MA 필터 테스트 추가**
 
 ```python
 def test_market_filter():
@@ -725,7 +731,7 @@ async def _test_market_filter_async():
     print("  [PASS] market_filter: 정상 시장 healthy 판정")
 ```
 
-- [ ] **Step 2: executor.py에 update_market_filter 구현**
+- [x] **Step 2: executor.py에 update_market_filter 구현**
 
 `GridEngine` 클래스 바깥, 모듈 레벨 함수로 추가:
 
@@ -748,7 +754,7 @@ async def update_market_filter(state: BotState, exchange) -> None:
         await notify_error("MarketFilter", e)
 ```
 
-- [ ] **Step 3: test.py unit4에 테스트 추가 & 실행**
+- [x] **Step 3: test.py unit4에 테스트 추가 & 실행**
 
 ```python
         test_market_filter()
@@ -757,7 +763,7 @@ async def update_market_filter(state: BotState, exchange) -> None:
 Run: `python test.py unit4`
 Expected: `[PASS]`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add executor.py test.py
@@ -769,10 +775,11 @@ git commit -m "feat: update_market_filter — BTC 200MA 기반 시장 건강성 
 ### Task 7: regrid — 리그리딩
 
 **Files:**
+
 - Modify: `executor.py`
 - Modify: `test.py`
 
-- [ ] **Step 1: test.py에 리그리딩 테스트 추가**
+- [x] **Step 1: test.py에 리그리딩 테스트 추가**
 
 ```python
 def test_regrid():
@@ -805,7 +812,7 @@ async def _test_regrid_async(engine, ex):
     print(f"  [PASS] regrid: 기준가 {old_base} → {engine.base_price}")
 ```
 
-- [ ] **Step 2: executor.py에 regrid 구현**
+- [x] **Step 2: executor.py에 regrid 구현**
 
 GridEngine 클래스 내부, `cancel_all` 아래에 추가:
 
@@ -822,7 +829,7 @@ GridEngine 클래스 내부, `cancel_all` 아래에 추가:
         await send(f"[리그리딩] {self.symbol} 새 그리드 배치 @ ${self.base_price:,.2f}")
 ```
 
-- [ ] **Step 3: test.py unit4에 테스트 추가 & 실행**
+- [x] **Step 3: test.py unit4에 테스트 추가 & 실행**
 
 ```python
         test_regrid()
@@ -831,7 +838,7 @@ GridEngine 클래스 내부, `cancel_all` 아래에 추가:
 Run: `python test.py unit4`
 Expected: `[PASS]`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add executor.py test.py
@@ -843,10 +850,11 @@ git commit -m "feat: regrid — 상단 이탈 시 현재가 기준 그리드 재
 ### Task 8: run_executor — 오케스트레이터 (안전장치 + 동적 스위칭)
 
 **Files:**
+
 - Modify: `executor.py`
 - Modify: `test.py`
 
-- [ ] **Step 1: test.py에 run_executor 킬 스위치 테스트 추가**
+- [x] **Step 1: test.py에 run_executor 킬 스위치 테스트 추가**
 
 ```python
 def test_run_executor_kill():
@@ -879,7 +887,7 @@ async def _test_run_executor_kill_async():
     print("  [PASS] run_executor: 킬 스위치 정상 종료")
 ```
 
-- [ ] **Step 2: executor.py에 run_executor 구현**
+- [x] **Step 2: executor.py에 run_executor 구현**
 
 모듈 레벨 함수, `update_market_filter` 아래에 추가:
 
@@ -997,7 +1005,7 @@ async def run_executor(state: BotState, exchange) -> None:
     print("[Executor] 종료")
 ```
 
-- [ ] **Step 3: test.py unit4에 테스트 추가 & 실행**
+- [x] **Step 3: test.py unit4에 테스트 추가 & 실행**
 
 ```python
         test_run_executor_kill()
@@ -1006,7 +1014,7 @@ async def run_executor(state: BotState, exchange) -> None:
 Run: `python test.py unit4`
 Expected: `[PASS]`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add executor.py test.py
@@ -1018,10 +1026,11 @@ git commit -m "feat: run_executor — 안전장치 6단계 + 동적 코인 스�
 ### Task 9: main.py 통합 + config 업데이트
 
 **Files:**
+
 - Modify: `main.py`
 - Modify: `config.py`
 
-- [ ] **Step 1: main.py — run_executor를 executor.py에서 import**
+- [x] **Step 1: main.py — run_executor를 executor.py에서 import**
 
 main.py에서 기존 `run_executor` 함수(L32~47) 삭제하고 import 교체:
 
@@ -1031,18 +1040,18 @@ main.py에서 기존 `run_executor` 함수(L32~47) 삭제하고 import 교체:
 from executor import run_executor
 ```
 
-- [ ] **Step 2: config.py — SCANNER_INTERVAL_SEC 900으로 변경**
+- [x] **Step 2: config.py — SCANNER_INTERVAL_SEC 900으로 변경**
 
 ```python
 SCANNER_INTERVAL_SEC  = 900     # 스캔 주기 (초) — 15분 (Phase 4: 동적 스위칭 반응성)
 ```
 
-- [ ] **Step 3: import 검증**
+- [x] **Step 3: import 검증**
 
 Run: `python -c "from main import main; print('OK')"`
 Expected: `OK`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add main.py config.py
@@ -1054,11 +1063,12 @@ git commit -m "refactor: main.py run_executor → executor.py 분리, 스캐너 
 ### Task 10: 통합 테스트 + 문서 업데이트
 
 **Files:**
+
 - Modify: `test.py`
 - Modify: `TODO.md`
 - Modify: `CLAUDE.md`
 
-- [ ] **Step 1: test.py — 전체 테스트 실행 모드 추가**
+- [x] **Step 1: test.py — 전체 테스트 실행 모드 추가**
 
 기존 `unit` 모드에 Phase 4 테스트 병합:
 
@@ -1085,22 +1095,22 @@ git commit -m "refactor: main.py run_executor → executor.py 분리, 스캐너 
         print("모든 단위 테스트 통과!")
 ```
 
-- [ ] **Step 2: 전체 단위 테스트 실행**
+- [x] **Step 2: 전체 단위 테스트 실행**
 
 Run: `python test.py unit`
 Expected: Phase 3 + Phase 4 모든 테스트 `[PASS]`
 
-- [ ] **Step 3: TODO.md Phase 4 항목 체크**
+- [x] **Step 3: TODO.md Phase 4 항목 체크**
 
 Phase 4 항목을 전부 `[x]`로 변경, Phase 5 항목도 통합 구현된 것은 체크.
 
-- [ ] **Step 4: CLAUDE.md 파일 구조에 executor.py 추가**
+- [x] **Step 4: CLAUDE.md 파일 구조에 executor.py 추가**
 
 ```
 executor.py      — 트레이딩 엔진 (GridEngine + run_executor + 200MA 필터)
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add test.py TODO.md CLAUDE.md

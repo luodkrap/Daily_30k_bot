@@ -40,7 +40,7 @@ MAX_POSITION_RATE = 0.010        # 1% Rule: 한 포지션 최대 시드의 1%
 STOP_LOSS_RATE    = 0.020        # 개별 손절매 2%
 
 # ─── 스캐너 파라미터 (params.json으로 자동 조정 대상) ──────
-SCANNER_INTERVAL_SEC  = 3600    # 스캔 주기 (초) — 기본 1시간
+SCANNER_INTERVAL_SEC  = 900     # 스캔 주기 (초) — 15분 (Phase 4: 동적 스위칭 반응성)
 MIN_VOLUME_USD        = 100_000_000  # 최소 24h 거래량 $100M
 ATR_MIN_RATE          = 0.005   # ATR 최소 비율 (변동성 하한)
 ATR_MAX_RATE          = 0.050   # ATR 최대 비율 (펌프앤덤프 차단 상한)

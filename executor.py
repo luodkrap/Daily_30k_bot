@@ -302,3 +302,117 @@ async def update_krw_rate() -> None:
     except Exception as e:
         # 환율 갱신 실패 시 기존 값 유지 (안전)
         print(f"[KRW] 환율 갱신 실패 (기존값 유지): {e}")
+
+
+async def run_executor(state: BotState, exchange) -> None:
+    """트레이딩 엔진 메인 루프. 안전장치 → 그리드 매매 → 1초 폴링."""
+    engine: GridEngine | None = None
+    last_ma_check: float = 0
+
+    print("[Executor] 시작")
+    while not state.kill_event.is_set():
+        try:
+            # ── 1. 킬 이벤트 재확인 ──
+            if state.kill_event.is_set():
+                break
+
+            # ── 2. 일일 손실 한도 초과 → 킬 스위치 ──
+            if state.daily_pnl <= -DAILY_LOSS_LIMIT:
+                await notify_kill_switch()
+                if engine:
+                    if engine.total_qty > 0:
+                        await _retry_api(
+                            exchange.create_order,
+                            engine.symbol, "market", "sell", engine.total_qty,
+                        )
+                    await engine.cancel_all()
+                state.kill_event.set()
+                break
+
+            # ── 3. 일일 목표 수익 달성 → 하드 스탑 ──
+            if state.should_stop_profit:
+                reason = "목표 수익 달성" if state.daily_pnl >= 0 else "조기 중단 (시장 악화)"
+                await notify_daily_stop(reason, state.daily_pnl)
+                if engine:
+                    if engine.total_qty > 0:
+                        await _retry_api(
+                            exchange.create_order,
+                            engine.symbol, "market", "sell", engine.total_qty,
+                        )
+                    await engine.cancel_all()
+                state.kill_event.set()
+                break
+
+            # ── 4. 200MA 체크 + 환율 갱신 (30분마다) ──
+            now = time.time()
+            if now - last_ma_check > 1800:
+                await update_market_filter(state, exchange)
+                await update_krw_rate()
+                last_ma_check = now
+
+            # ── 5. 타겟 코인 없으면 대기 ──
+            if not state.target_coin:
+                await asyncio.sleep(1)
+                continue
+
+            # ── 6. 동적 코인 스위칭 ──
+            if engine and engine.symbol != state.target_coin:
+                await send(
+                    f"[스위칭] {engine.symbol} → {state.target_coin}"
+                )
+                if engine.total_qty > 0:
+                    await _retry_api(
+                        exchange.create_order,
+                        engine.symbol, "market", "sell", engine.total_qty,
+                    )
+                await engine.cancel_all()
+                engine = None
+
+            # ── 7. 시장 악화 시 신규 진입 차단 ──
+            if engine is None and not state.is_market_healthy:
+                await asyncio.sleep(1)
+                continue
+
+            # ── 8. 엔진 생성 & 그리드 셋업 ──
+            if engine is None:
+                engine = GridEngine(state.target_coin, exchange, state)
+                if not engine.validate_fees():
+                    await send("[Executor] 수수료 검증 실패 — 그리드 간격 부족")
+                    engine = None
+                    await asyncio.sleep(60)
+                    continue
+                await engine.setup_grid()
+
+            # ── 9. 손절 체크 ──
+            ticker = await _retry_api(exchange.fetch_ticker, engine.symbol)
+            current_price = ticker["last"]
+            if await engine.check_stop_loss(current_price):
+                engine = None
+                continue
+
+            # ── 10. 주문 체결 감지 ──
+            await engine.monitor_orders()
+
+            # ── 11. 리그리딩 체크 ──
+            if engine.is_active and engine.total_qty <= 0 and not engine.sell_orders:
+                if REGRID_ENABLED:
+                    await engine.regrid()
+                else:
+                    engine = None
+
+        except Exception as e:
+            await notify_error("Executor", e)
+
+        await asyncio.sleep(1)
+
+    # 종료 정리
+    if engine:
+        if engine.total_qty > 0:
+            try:
+                await exchange.create_order(
+                    engine.symbol, "market", "sell", engine.total_qty,
+                )
+            except Exception:
+                pass
+        await engine.cancel_all()
+    print("[Executor] 종료")

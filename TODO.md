@@ -36,17 +36,17 @@
 
 ### Phase 4 — 트레이딩 엔진
 
-- [ ] 그리드 매매 로직 구현
-- [ ] 동적 코인 스위칭
-- [ ] `main.py:46` — Executor sleep 5s → 1s (손절 반응 지연 제거)
-- [ ] `config.py:43` — SCANNER_INTERVAL_SEC 3600 → 900 (15분, 동적 스위칭 반응성)
+- [x] 그리드 매매 로직 구현 (GridEngine: setup_grid, monitor_orders, regrid)
+- [x] 동적 코인 스위칭 (run_executor 오케스트레이터)
+- [x] `main.py` — run_executor를 executor.py로 분리
+- [x] `config.py` — SCANNER_INTERVAL_SEC 3600 → 900 (15분, 동적 스위칭 반응성)
 
 ### Phase 5 — 리스크 관리
 
-- [ ] 손절매 (Stop-Loss)
-- [ ] 1% Rule 포지션 사이징
-- [ ] 시장 필터 (200MA 기준)
-- [ ] 킬 스위치 + 일일 손실 한도
+- [x] 손절매 (Stop-Loss) — check_stop_loss: 진입가 -2% 전량 시장가 매도
+- [x] 1% Rule 포지션 사이징 — calc_position_size
+- [x] 시장 필터 (200MA 기준) — update_market_filter + 실시간 환율 갱신
+- [x] 킬 스위치 + 일일 손실 한도 — run_executor 안전장치 6단계
 
 ### Phase 6 — 검증
 

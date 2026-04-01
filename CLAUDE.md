@@ -19,6 +19,7 @@ config.py        — .env 로드, SEED 기반 수치 자동 계산 (모든 모�
 shared_state.py  — BotState dataclass (킬 이벤트, 손익, 시장 상태 공유)
 notifier.py      — 텔레그램 비동기 알림 모듈
 screener.py      — 스캐너 엔진 (유동성·변동성·펌프앤덤프 필터 + 점수 정렬)
+executor.py      — 트레이딩 엔진 (GridEngine + run_executor + 200MA 필터)
 main.py          — asyncio.gather()로 3개 컴포넌트 동시 실행
 test.py          — 단위·통합 테스트
 ```

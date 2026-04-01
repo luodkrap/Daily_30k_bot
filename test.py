@@ -390,6 +390,36 @@ async def _test_regrid_async(engine, ex):
     print(f"  [PASS] regrid: 기준가 {old_base} → {engine.base_price}")
 
 
+def test_run_executor_kill():
+    from executor import run_executor
+    from shared_state import BotState
+
+    asyncio.run(_test_run_executor_kill_async())
+
+
+async def _test_run_executor_kill_async():
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+    state.target_coin = "ETH/USDT"
+
+    # 2초 후 킬 스위치 발동
+    async def trigger_kill():
+        await asyncio.sleep(2)
+        state.kill_event.set()
+
+    # run_executor와 킬 트리거 동시 실행
+    from executor import run_executor
+    await asyncio.gather(
+        run_executor(state, ex),
+        trigger_kill(),
+    )
+
+    assert state.kill_event.is_set(), "킬 이벤트 미설정"
+    print("  [PASS] run_executor: 킬 스위치 정상 종료")
+
+
 # ─────────────────────────────────────────────────────────
 # Phase 3 통합 테스트 (온라인 — 실제 바이낸스 API 호출)
 # ─────────────────────────────────────────────────────────
@@ -437,6 +467,20 @@ if __name__ == "__main__":
         test_calc_atr()
         test_is_pumped()
         test_pre_filter()
+        print("Phase 3 단위 테스트 통과!\n")
+
+        print("=== Phase 4 단위 테스트 ===")
+        test_validate_fees()
+        test_calc_position_size()
+        test_setup_grid()
+        test_handle_buy_fill()
+        test_handle_sell_fill()
+        test_stop_loss()
+        test_market_filter()
+        test_regrid()
+        test_run_executor_kill()
+        print("Phase 4 단위 테스트 통과!\n")
+
         print("모든 단위 테스트 통과!")
 
     elif mode == "unit4":
@@ -449,6 +493,7 @@ if __name__ == "__main__":
         test_stop_loss()
         test_market_filter()
         test_regrid()
+        test_run_executor_kill()
         print("Phase 4 단위 테스트 통과!")
 
     elif mode == "scan":

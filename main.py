@@ -26,25 +26,8 @@ import ccxt.async_support as ccxt_async
 from config import BINANCE_API_KEY, BINANCE_SECRET_KEY
 from shared_state import BotState
 from screener import run_screener
+from executor import run_executor
 from notifier import send, notify_error, init_session, close_session
-
-
-async def run_executor(state: BotState, exchange: ccxt_async.binance) -> None:
-    """트레이딩 엔진 — Phase 4에서 구현 예정."""
-    print("[Executor] 시작 (뼈대)")
-    while not state.kill_event.is_set():
-        try:
-            if state.should_stop_profit:
-                from notifier import notify_daily_stop
-                reason = "목표 수익 달성" if state.daily_pnl >= 0 else "시장 악화"
-                await notify_daily_stop(reason, state.daily_pnl)
-                state.kill_event.set()
-                break
-            # TODO Phase 4: 그리드 매매 로직
-        except Exception as e:
-            await notify_error("Executor", e)
-        await asyncio.sleep(5)
-    print("[Executor] 종료")
 
 
 async def run_telegram_bot(state: BotState) -> None:
