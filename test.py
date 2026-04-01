@@ -205,6 +205,44 @@ def test_calc_position_size():
     print(f"  [PASS] calc_position_size: 정상={size:.2f}, 잔고제한={size_low:.2f}")
 
 
+def test_setup_grid():
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+
+    asyncio.run(_test_setup_grid_async(engine, ex))
+
+
+async def _test_setup_grid_async(engine, ex):
+    await engine.setup_grid()
+
+    # 1. 그리드 활성화
+    assert engine.is_active is True, "그리드 미활성"
+
+    # 2. 초기 시장가 매수 실행됨 (보유량 > 0)
+    assert engine.total_qty > 0, f"초기 매수 실패: qty={engine.total_qty}"
+
+    # 3. 매도 주문 5개 배치
+    assert len(engine.sell_orders) == 5, f"매도 주문 수: {len(engine.sell_orders)}"
+
+    # 4. 매수 주문 5개 배치
+    assert len(engine.buy_orders) == 5, f"매수 주문 수: {len(engine.buy_orders)}"
+
+    # 5. 매도 가격 확인: base_price 위로 올라감
+    for info in engine.sell_orders.values():
+        assert info["price"] > engine.base_price, f"매도 가격이 기준가 이하: {info['price']}"
+
+    # 6. 매수 가격 확인: base_price 아래
+    for info in engine.buy_orders.values():
+        assert info["price"] < engine.base_price, f"매수 가격이 기준가 이상: {info['price']}"
+
+    print(f"  [PASS] setup_grid: qty={engine.total_qty:.4f}, "
+          f"매도={len(engine.sell_orders)}개, 매수={len(engine.buy_orders)}개")
+
+
 # ─────────────────────────────────────────────────────────
 # Phase 3 통합 테스트 (온라인 — 실제 바이낸스 API 호출)
 # ─────────────────────────────────────────────────────────
@@ -258,6 +296,7 @@ if __name__ == "__main__":
         print("=== Phase 4 단위 테스트 ===")
         test_validate_fees()
         test_calc_position_size()
+        test_setup_grid()
         print("Phase 4 단위 테스트 통과!")
 
     elif mode == "scan":

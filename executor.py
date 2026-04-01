@@ -70,3 +70,61 @@ class GridEngine:
         max_loss_usdt = seed_usdt * MAX_POSITION_RATE
         max_invest = max_loss_usdt / STOP_LOSS_RATE
         return min(max_invest, usdt_balance)
+
+    # ── 그리드 초기 설정 ─────────────────────────────
+    async def setup_grid(self) -> None:
+        """시장가 50% 매수 → 매도 그리드 5개 + 매수 그리드 5개 배치."""
+        # 1. 현재가 조회
+        ticker = await _retry_api(self.exchange.fetch_ticker, self.symbol)
+        self.base_price = ticker["last"]
+
+        # 2. 잔고 확인 & 포지션 사이징
+        balance = await _retry_api(self.exchange.fetch_balance)
+        usdt_free = balance["USDT"]["free"]
+        max_invest = self.calc_position_size(usdt_free)
+
+        # 3. 시장가 매수 (50%)
+        buy_usdt = max_invest * INITIAL_BUY_RATIO
+        buy_qty = buy_usdt / self.base_price
+
+        order = await _retry_api(
+            self.exchange.create_order,
+            self.symbol, "market", "buy", buy_qty,
+        )
+        fill_price = order["average"] or self.base_price
+        fill_qty = order["filled"]
+        self.total_qty = fill_qty
+        self.avg_price = fill_price
+        self.total_invested = fill_qty * fill_price
+
+        # 4. 매도 그리드 배치 (보유 물량 5등분)
+        sell_qty_each = fill_qty / GRID_COUNT
+        for level in range(1, GRID_COUNT + 1):
+            price = self.base_price * (1 + GRID_SPACING * level)
+            sell_order = await _retry_api(
+                self.exchange.create_order,
+                self.symbol, "limit", "sell", sell_qty_each, price,
+            )
+            self.sell_orders[sell_order["id"]] = {
+                "price": price, "qty": sell_qty_each, "grid_level": level,
+            }
+
+        # 5. 매수 그리드 배치 (나머지 50% 5등분)
+        remaining_usdt = max_invest - buy_usdt
+        for level in range(1, GRID_COUNT + 1):
+            price = self.base_price * (1 - GRID_SPACING * level)
+            qty = (remaining_usdt / GRID_COUNT) / price
+            buy_order = await _retry_api(
+                self.exchange.create_order,
+                self.symbol, "limit", "buy", qty, price,
+            )
+            self.buy_orders[buy_order["id"]] = {
+                "price": price, "qty": qty, "grid_level": level,
+            }
+
+        self.is_active = True
+        await send(
+            f"[그리드] {self.symbol} 배치 완료\n"
+            f"기준가: ${self.base_price:,.2f} | 보유: {self.total_qty:.4f}\n"
+            f"매도 {len(self.sell_orders)}개 | 매수 {len(self.buy_orders)}개"
+        )
