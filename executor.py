@@ -203,3 +203,51 @@ class GridEngine:
         self.buy_orders[order["id"]] = {
             "price": buy_price, "qty": qty, "grid_level": info["grid_level"],
         }
+
+    # ── 손절매 ───────────────────────────────────────
+    async def check_stop_loss(self, current_price: float) -> bool:
+        """현재가 < 평균매수가 × (1 - STOP_LOSS_RATE) → 전량 시장가 매도."""
+        if self.total_qty <= 0 or self.avg_price <= 0:
+            return False
+        if current_price >= self.avg_price * (1 - STOP_LOSS_RATE):
+            return False
+
+        # 전량 시장가 매도
+        await _retry_api(
+            self.exchange.create_order,
+            self.symbol, "market", "sell", self.total_qty,
+        )
+        # 손실 기록
+        loss_usdt = (current_price - self.avg_price) * self.total_qty
+        fee_usdt = current_price * self.total_qty * FEE_RATE
+        loss_krw = (loss_usdt - fee_usdt) * KRW_RATE
+
+        self.state.daily_pnl += loss_krw
+        self.state.trade_count += 1
+        self.state.consecutive_losses += 1
+
+        await self.cancel_all()
+        self.total_qty = 0.0
+        self.is_active = False
+
+        await send(
+            f"[손절매] {self.symbol} 전량 매도 @ ${current_price:,.2f}\n"
+            f"손실: {loss_krw:,.0f}원"
+        )
+        return True
+
+    # ── 전 주문 취소 ─────────────────────────────────
+    async def cancel_all(self) -> None:
+        """미체결 주문 전부 취소."""
+        for oid in list(self.buy_orders):
+            try:
+                await self.exchange.cancel_order(oid, self.symbol)
+            except Exception:
+                pass
+        for oid in list(self.sell_orders):
+            try:
+                await self.exchange.cancel_order(oid, self.symbol)
+            except Exception:
+                pass
+        self.buy_orders.clear()
+        self.sell_orders.clear()

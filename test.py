@@ -300,6 +300,43 @@ async def _test_handle_sell_fill_async(engine, ex, state):
     print(f"  [PASS] handle_sell_fill: 매도 체결 → PnL={state.daily_pnl:,.0f}원, 매수 재배치")
 
 
+def test_stop_loss():
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+
+    asyncio.run(_test_stop_loss_async(engine, ex, state))
+
+
+async def _test_stop_loss_async(engine, ex, state):
+    from executor import GridEngine
+    from shared_state import BotState
+
+    await engine.setup_grid()
+    assert engine.is_active is True
+
+    # 2% 하락 시 손절 발동
+    triggered = await engine.check_stop_loss(current_price=97.9)
+    assert triggered is True, "손절 미발동"
+    assert engine.is_active is False, "그리드 미비활성"
+    assert state.daily_pnl < 0, f"손실 미기록: {state.daily_pnl}"
+    assert len(engine.buy_orders) == 0, "미체결 매수 주문 잔존"
+    assert len(engine.sell_orders) == 0, "미체결 매도 주문 잔존"
+
+    # 정상 범위에서는 미발동
+    state2 = BotState()
+    ex2 = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+    engine2 = GridEngine("ETH/USDT", ex2, state2)
+    await engine2.setup_grid()
+    not_triggered = await engine2.check_stop_loss(current_price=99.0)
+    assert not_triggered is False, "정상 가격에서 손절 발동"
+
+    print("  [PASS] stop_loss: 2% 하락 발동, 정상가 미발동")
+
+
 # ─────────────────────────────────────────────────────────
 # Phase 3 통합 테스트 (온라인 — 실제 바이낸스 API 호출)
 # ─────────────────────────────────────────────────────────
@@ -356,6 +393,7 @@ if __name__ == "__main__":
         test_setup_grid()
         test_handle_buy_fill()
         test_handle_sell_fill()
+        test_stop_loss()
         print("Phase 4 단위 테스트 통과!")
 
     elif mode == "scan":
