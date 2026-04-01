@@ -38,6 +38,8 @@
 
 - [ ] 그리드 매매 로직 구현
 - [ ] 동적 코인 스위칭
+- [ ] `main.py:46` — Executor sleep 5s → 1s (손절 반응 지연 제거)
+- [ ] `config.py:43` — SCANNER_INTERVAL_SEC 3600 → 900 (15분, 동적 스위칭 반응성)
 
 ### Phase 5 — 리스크 관리
 

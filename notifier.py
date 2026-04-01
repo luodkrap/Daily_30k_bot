@@ -25,13 +25,35 @@ notifier.py
 import aiohttp
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 
+# TCP+TLS 연결을 재사용하여 메시지당 ~600ms 지연 제거
+_session: aiohttp.ClientSession | None = None
+
+
+async def init_session() -> None:
+    """앱 시작 시 1회 호출 — 이후 모든 알림이 이 세션을 공유."""
+    global _session
+    _session = aiohttp.ClientSession()
+
+
+async def close_session() -> None:
+    """앱 종료 시 1회 호출."""
+    global _session
+    if _session:
+        await _session.close()
+        _session = None
+
 
 async def send(text: str) -> None:
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload) as resp:
+        if _session is None or _session.closed:
+            # 세션이 없으면 임시 생성 (init_session 미호출 방어)
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload) as resp:
+                    resp.raise_for_status()
+        else:
+            async with _session.post(url, json=payload) as resp:
                 resp.raise_for_status()
     except Exception as e:
         print(f"[Notifier] 텔레그램 전송 실패: {e}")

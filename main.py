@@ -26,7 +26,7 @@ import ccxt.async_support as ccxt_async
 from config import BINANCE_API_KEY, BINANCE_SECRET_KEY
 from shared_state import BotState
 from screener import run_screener
-from notifier import send, notify_error
+from notifier import send, notify_error, init_session, close_session
 
 
 async def run_executor(state: BotState, exchange: ccxt_async.binance) -> None:
@@ -149,6 +149,7 @@ async def main() -> None:
     state.exchange = exchange
 
     try:
+        await init_session()
         await send("Daily 30K Bot 시작!")
         await asyncio.gather(
             run_screener(state, exchange),
@@ -159,6 +160,7 @@ async def main() -> None:
         await notify_error("main", e)
     finally:
         await exchange.close()
+        await close_session()
         print("[Main] 봇 종료 완료")
 
 
