@@ -252,6 +252,17 @@ class GridEngine:
         self.buy_orders.clear()
         self.sell_orders.clear()
 
+    # ── 리그리딩 ─────────────────────────────────────
+    async def regrid(self) -> None:
+        """현재가 기준으로 그리드 새로 배치."""
+        await self.cancel_all()
+        self.total_qty = 0.0
+        self.avg_price = 0.0
+        self.total_invested = 0.0
+        self.is_active = False
+        await self.setup_grid()
+        await send(f"[리그리딩] {self.symbol} 새 그리드 배치 @ ${self.base_price:,.2f}")
+
 
 async def update_market_filter(state: BotState, exchange) -> None:
     """BTC 200MA 필터 갱신. 30분마다 호출."""

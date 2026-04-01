@@ -360,6 +360,36 @@ async def _test_market_filter_async():
     print("  [PASS] market_filter: 정상 시장 healthy 판정")
 
 
+def test_regrid():
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+
+    asyncio.run(_test_regrid_async(engine, ex))
+
+
+async def _test_regrid_async(engine, ex):
+    await engine.setup_grid()
+    old_base = engine.base_price
+
+    # 가격 상승 시뮬레이션
+    ex._ticker_price = 110.0
+    ex._usdt_balance = 5000.0  # 매도 후 자금 회수 가정
+
+    await engine.regrid()
+
+    # 새 기준가가 업데이트됨
+    assert engine.base_price == 110.0, f"기준가 미갱신: {engine.base_price}"
+    assert engine.is_active is True, "리그리딩 후 비활성"
+    assert len(engine.sell_orders) == 5, f"매도 주문: {len(engine.sell_orders)}"
+    assert len(engine.buy_orders) == 5, f"매수 주문: {len(engine.buy_orders)}"
+
+    print(f"  [PASS] regrid: 기준가 {old_base} → {engine.base_price}")
+
+
 # ─────────────────────────────────────────────────────────
 # Phase 3 통합 테스트 (온라인 — 실제 바이낸스 API 호출)
 # ─────────────────────────────────────────────────────────
@@ -418,6 +448,7 @@ if __name__ == "__main__":
         test_handle_sell_fill()
         test_stop_loss()
         test_market_filter()
+        test_regrid()
         print("Phase 4 단위 테스트 통과!")
 
     elif mode == "scan":
