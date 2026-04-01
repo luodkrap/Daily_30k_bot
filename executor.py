@@ -128,3 +128,78 @@ class GridEngine:
             f"기준가: ${self.base_price:,.2f} | 보유: {self.total_qty:.4f}\n"
             f"매도 {len(self.sell_orders)}개 | 매수 {len(self.buy_orders)}개"
         )
+
+    # ── 주문 모니터링 ────────────────────────────────
+    async def monitor_orders(self) -> None:
+        """1초 폴링: 미체결 목록과 비교하여 체결된 주문 감지."""
+        open_orders = await _retry_api(self.exchange.fetch_open_orders, self.symbol)
+        open_ids = {o["id"] for o in open_orders}
+
+        # 폴링 시점 스냅샷 — 처리 중 새로 생성된 주문은 이번 사이클에서 제외
+        buy_snapshot = list(self.buy_orders)
+        sell_snapshot = list(self.sell_orders)
+
+        # 매수 체결 감지
+        for oid in buy_snapshot:
+            if oid not in open_ids and oid in self.buy_orders:
+                await self._handle_buy_fill(oid, self.buy_orders[oid])
+
+        # 매도 체결 감지
+        for oid in sell_snapshot:
+            if oid not in open_ids and oid in self.sell_orders:
+                await self._handle_sell_fill(oid, self.sell_orders[oid])
+
+    async def _handle_buy_fill(self, order_id: str, info: dict) -> None:
+        """매수 체결 → 보유량 갱신 + 위에 매도 주문."""
+        del self.buy_orders[order_id]
+        qty = info["qty"]
+        price = info["price"]
+
+        # 평균 매수가 갱신
+        old_cost = self.avg_price * self.total_qty
+        self.total_qty += qty
+        self.avg_price = (old_cost + price * qty) / self.total_qty if self.total_qty > 0 else 0
+
+        # 위에 매도 주문
+        sell_price = price * (1 + GRID_SPACING)
+        order = await _retry_api(
+            self.exchange.create_order,
+            self.symbol, "limit", "sell", qty, sell_price,
+        )
+        self.sell_orders[order["id"]] = {
+            "price": sell_price, "qty": qty, "grid_level": info["grid_level"],
+        }
+
+    async def _handle_sell_fill(self, order_id: str, info: dict) -> None:
+        """매도 체결 → 수익 기록 + 아래에 매수 재배치."""
+        del self.sell_orders[order_id]
+        qty = info["qty"]
+        sell_price = info["price"]
+
+        self.total_qty -= qty
+
+        # 수익 계산 (KRW)
+        gross_usdt = (sell_price - self.avg_price) * qty
+        fee_usdt = (sell_price * qty + self.avg_price * qty) * FEE_RATE
+        net_usdt = gross_usdt - fee_usdt
+        net_krw = net_usdt * KRW_RATE
+
+        self.state.daily_pnl += net_krw
+        self.state.trade_count += 1
+        if net_krw > 0:
+            self.state.win_count += 1
+            self.state.consecutive_losses = 0
+        else:
+            self.state.consecutive_losses += 1
+
+        await notify_trade(self.symbol, "SELL", sell_price, net_krw)
+
+        # 아래에 매수 재배치
+        buy_price = sell_price * (1 - GRID_SPACING)
+        order = await _retry_api(
+            self.exchange.create_order,
+            self.symbol, "limit", "buy", qty, buy_price,
+        )
+        self.buy_orders[order["id"]] = {
+            "price": buy_price, "qty": qty, "grid_level": info["grid_level"],
+        }

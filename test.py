@@ -243,6 +243,63 @@ async def _test_setup_grid_async(engine, ex):
           f"매도={len(engine.sell_orders)}개, 매수={len(engine.buy_orders)}개")
 
 
+def test_handle_buy_fill():
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+
+    asyncio.run(_test_handle_buy_fill_async(engine, ex, state))
+
+
+async def _test_handle_buy_fill_async(engine, ex, state):
+    await engine.setup_grid()
+    sell_count_before = len(engine.sell_orders)
+
+    # 매수 주문 하나를 체결 시뮬레이션
+    buy_oid = list(engine.buy_orders.keys())[0]
+    buy_info = engine.buy_orders[buy_oid]
+    ex.simulate_fill(buy_oid)
+
+    await engine.monitor_orders()
+
+    # 매수 체결 → 해당 주문 제거 + 새 매도 주문 생성
+    assert buy_oid not in engine.buy_orders, "체결된 매수 주문이 남아있음"
+    assert len(engine.sell_orders) == sell_count_before + 1, "대응 매도 주문 미생성"
+    print("  [PASS] handle_buy_fill: 매수 체결 → 매도 주문 생성")
+
+
+def test_handle_sell_fill():
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+
+    asyncio.run(_test_handle_sell_fill_async(engine, ex, state))
+
+
+async def _test_handle_sell_fill_async(engine, ex, state):
+    await engine.setup_grid()
+    buy_count_before = len(engine.buy_orders)
+
+    # 매도 주문 하나를 체결 시뮬레이션
+    sell_oid = list(engine.sell_orders.keys())[0]
+    ex.simulate_fill(sell_oid)
+
+    await engine.monitor_orders()
+
+    # 매도 체결 → 해당 주문 제거 + 새 매수 주문 생성 + PnL 기록
+    assert sell_oid not in engine.sell_orders, "체결된 매도 주문이 남아있음"
+    assert len(engine.buy_orders) == buy_count_before + 1, "대응 매수 주문 미생성"
+    assert state.trade_count == 1, f"거래 횟수: {state.trade_count}"
+    assert state.daily_pnl != 0.0, "PnL 미기록"
+    print(f"  [PASS] handle_sell_fill: 매도 체결 → PnL={state.daily_pnl:,.0f}원, 매수 재배치")
+
+
 # ─────────────────────────────────────────────────────────
 # Phase 3 통합 테스트 (온라인 — 실제 바이낸스 API 호출)
 # ─────────────────────────────────────────────────────────
@@ -297,6 +354,8 @@ if __name__ == "__main__":
         test_validate_fees()
         test_calc_position_size()
         test_setup_grid()
+        test_handle_buy_fill()
+        test_handle_sell_fill()
         print("Phase 4 단위 테스트 통과!")
 
     elif mode == "scan":
