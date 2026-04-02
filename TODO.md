@@ -48,6 +48,22 @@
 - [x] 시장 필터 (200MA 기준) — update_market_filter + 실시간 환율 갱신
 - [x] 킬 스위치 + 일일 손실 한도 — run_executor 안전장치 6단계
 
+### 버그 수정 — Phase 5 감사 결과 (실전 투입 전 필수)
+
+> 상세 수정 방법 및 진행 순서 → [WORKFLOW.md](WORKFLOW.md)
+
+**치명적 (Critical) — 페이퍼 트레이딩 전 해결**
+- [x] C3: `check_stop_loss()` + `emergency_sell()` 매수 수수료 누락 → 킬 스위치 지연
+- [ ] C4: 리그리딩 트리거 `not engine.buy_orders` 조건 누락 → 이중 포지션 위험
+- [ ] C1: `setup_grid()` 시장가 매수 → 지정가로 교체 (CLAUDE.md 원칙 위반)
+- [ ] C2: 재시작 시 포지션·주문 상태 복구 로직 없음 → 이중 포지션 위험 (실전 투입 블로커)
+
+**높은 우선순위 (High) — 실전 투입 전 해결**
+- [x] H3: PROJECT.md 로드맵 Phase 4/5 완료 상태 미반영 (CLAUDE.md Rule 1 위반)
+- [ ] H1: `requirements.txt` 없음 → VPS 배포 불가 (실전 투입 블로커)
+- [ ] H2: 텔레그램 플러드 방지 없음 → 오류 루프 시 API 429
+- [ ] H4: `asyncio.gather` 컴포넌트 하나 실패 시 전체 봇 중단
+
 ### Phase 6 — 검증
 
 - [ ] 백테스트 (1~3년 데이터)

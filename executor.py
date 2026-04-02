@@ -255,10 +255,11 @@ class GridEngine:
             self.exchange.create_order,
             self.symbol, "market", "sell", self.total_qty,
         )
-        # 손실 기록
+        # 손실 기록 (매수·매도 수수료 모두 반영)
         loss_usdt = (current_price - self.avg_price) * self.total_qty
-        fee_usdt = current_price * self.total_qty * FEE_RATE
-        loss_krw = (loss_usdt - fee_usdt) * config.KRW_RATE
+        buy_fee_usdt  = self.avg_price  * self.total_qty * FEE_RATE
+        sell_fee_usdt = current_price   * self.total_qty * FEE_RATE
+        loss_krw = (loss_usdt - buy_fee_usdt - sell_fee_usdt) * config.KRW_RATE
 
         self.state.daily_pnl += loss_krw
         self.state.trade_count += 1
@@ -285,9 +286,10 @@ class GridEngine:
                 self.symbol, "market", "sell", self.total_qty,
             )
             fill_price = order.get("average") or current_price
-            gross_usdt = (fill_price - self.avg_price) * self.total_qty
-            fee_usdt = fill_price * self.total_qty * FEE_RATE
-            net_usdt = gross_usdt - fee_usdt
+            gross_usdt    = (fill_price - self.avg_price) * self.total_qty
+            buy_fee_usdt  = self.avg_price * self.total_qty * FEE_RATE
+            sell_fee_usdt = fill_price     * self.total_qty * FEE_RATE
+            net_usdt = gross_usdt - buy_fee_usdt - sell_fee_usdt
             net_krw = net_usdt * config.KRW_RATE
             self.state.daily_pnl += net_krw
             self.state.trade_count += 1
