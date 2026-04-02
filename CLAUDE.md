@@ -4,6 +4,12 @@
 > 설계자: 도울 | 수석 개발자: Claude  
 > 상세 설계·아키텍처·로드맵 → [PROJECT.md](PROJECT.md) | 작업 현황 → [TODO.md](TODO.md)
 
+## 문서화 규칙 (Documentation Rules)
+
+1. PROJECT.md 업데이트: 로직에 중요한 변화가 생길 때마다(특히 매매 전략이나 API 호출 관련) PROJECT.md를 즉시 업데이트할 것.
+2. TODO.md 즉시 반영: TODO.md에 명시된 작업이 완료되면, 지체 없이 완료 표시(Check-off)를 할 것.
+3. 기록 후 실행: 새로운 버그가 발견되거나 새로운 기능이 계획되면, 구현을 시작하기 전에 반드시 TODO.md에 먼저 추가할 것.
+
 ## 개발 환경
 
 ```bash
