@@ -421,6 +421,227 @@ async def _test_run_executor_kill_async():
 
 
 # ─────────────────────────────────────────────────────────
+# 버그픽스 단위 테스트 (오프라인)
+# ─────────────────────────────────────────────────────────
+
+class MockExchangeWithPrecision(MockExchange):
+    """stepSize=0.01, min_notional=$10 환경 시뮬레이션 (A2 테스트용)."""
+
+    @property
+    def markets(self):
+        return {
+            "ETH/USDT": {
+                "limits": {
+                    "amount": {"min": 0.01},
+                    "cost": {"min": 10.0},
+                },
+                "precision": {"amount": 2},
+            }
+        }
+
+    async def load_markets(self):
+        return self.markets
+
+    def amount_to_precision(self, symbol, amount):
+        return round(float(amount), 2)
+
+    def price_to_precision(self, symbol, price):
+        return round(float(price), 2)
+
+
+# ── A1: import 바인딩 버그 ────────────────────────────────
+
+def test_a1_krw_rate_runtime_change():
+    """A1: config.KRW_RATE 런타임 변경이 손익 계산에 반영되어야 한다."""
+    import config
+    original_rate = config.KRW_RATE
+    try:
+        config.KRW_RATE = 2700  # 기존 1350의 2배
+        asyncio.run(_test_a1_krw_rate_async())
+    finally:
+        config.KRW_RATE = original_rate
+
+
+async def _test_a1_krw_rate_async():
+    import config
+    from executor import GridEngine  # 이미 기본값으로 로드된 캐시 사용
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+    await engine.setup_grid()
+
+    sell_oid = list(engine.sell_orders.keys())[0]
+    sell_info = engine.sell_orders[sell_oid]
+    sell_price = sell_info["price"]
+    sell_qty = sell_info["qty"]
+    ex.simulate_fill(sell_oid)
+    await engine.monitor_orders()
+
+    # net_usdt = (sell_price - avg_price) * qty - fees
+    gross_usdt = (sell_price - engine.avg_price) * sell_qty
+    fee_usdt = (sell_price * sell_qty + engine.avg_price * sell_qty) * 0.001
+    net_usdt = gross_usdt - fee_usdt
+    expected_krw = net_usdt * 2700  # config.KRW_RATE = 2700 반영 기대
+
+    assert abs(state.daily_pnl - expected_krw) < 0.1, (
+        f"KRW_RATE 런타임 변경 미반영: "
+        f"expected {expected_krw:.2f}원 (rate=2700), "
+        f"got {state.daily_pnl:.2f}원"
+    )
+    print(f"  [PASS] a1_krw_rate_runtime_change: {state.daily_pnl:.0f}원 (rate=2700 반영)")
+
+
+def test_a1_seed_runtime_change():
+    """A1: config.SEED 런타임 변경이 포지션 사이징에 반영되어야 한다."""
+    import config
+    original_seed = config.SEED
+    try:
+        config.SEED = 6_000_000  # 기존 3,000,000의 2배
+        from executor import GridEngine
+        from shared_state import BotState
+        state = BotState()
+        ex = MockExchange()
+        engine = GridEngine("ETH/USDT", ex, state)
+
+        # SEED=6,000,000, KRW_RATE=1350 → seed_usdt=4444
+        # max_invest = (4444 * 0.01) / 0.02 = 2222
+        size = engine.calc_position_size(usdt_balance=5000.0)
+        assert 2200 < size < 2240, (
+            f"SEED 런타임 변경 미반영: expected ~2222, got {size:.2f}"
+        )
+        print(f"  [PASS] a1_seed_runtime_change: max_invest={size:.2f} (SEED=6,000,000 반영)")
+    finally:
+        config.SEED = original_seed
+
+
+# ── A2: LOT_SIZE / MIN_NOTIONAL ──────────────────────────
+
+def test_a2_lot_size_precision():
+    """A2: 주문 수량이 바이낸스 stepSize에 맞게 반올림되어야 한다."""
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchangeWithPrecision(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+    asyncio.run(_test_a2_lot_size_async(engine, ex))
+
+
+async def _test_a2_lot_size_async(engine, ex):
+    await engine.setup_grid()
+
+    step = 0.01  # MockExchangeWithPrecision precision=2
+
+    for oid, info in engine.sell_orders.items():
+        qty = info["qty"]
+        assert abs(qty - round(qty, 2)) < 1e-9, (
+            f"sell 수량 stepSize 미준수: {qty}"
+        )
+        notional = qty * info["price"]
+        assert notional >= 10.0, f"sell MIN_NOTIONAL 미달: {notional:.4f}"
+
+    for oid, info in engine.buy_orders.items():
+        qty = info["qty"]
+        assert abs(qty - round(qty, 2)) < 1e-9, (
+            f"buy 수량 stepSize 미준수: {qty}"
+        )
+        notional = qty * info["price"]
+        assert notional >= 10.0, f"buy MIN_NOTIONAL 미달: {notional:.4f}"
+
+    print("  [PASS] a2_lot_size: stepSize 준수, MIN_NOTIONAL 충족")
+
+
+# ── A3: regrid 이중 포지션 버그 ──────────────────────────
+
+def test_a3_regrid_sells_existing_position():
+    """A3: regrid() 시 기존 보유 물량을 먼저 시장가 매도해야 한다."""
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+    asyncio.run(_test_a3_regrid_async(engine, ex, state))
+
+
+async def _test_a3_regrid_async(engine, ex, state):
+    await engine.setup_grid()
+    qty_before = engine.total_qty
+    assert qty_before > 0, "그리드 설정 후 보유량 없음"
+
+    order_id_before = ex._order_id
+    ex._ticker_price = 110.0
+    ex._usdt_balance = 5000.0
+
+    await engine.regrid()
+
+    # regrid 과정에서 기존 물량에 대한 시장가 매도 주문이 발생해야 함
+    new_market_sells = [
+        o for o in ex._orders.values()
+        if o["type"] == "market" and o["side"] == "sell"
+        and int(o["id"]) > order_id_before
+    ]
+    assert len(new_market_sells) >= 1, (
+        "regrid() 시 기존 보유 물량 시장가 매도 없음 — 이중 포지션 위험"
+    )
+    assert engine.is_active is True, "regrid 후 그리드 미활성"
+    print(f"  [PASS] a3_regrid_sells_existing: qty={qty_before:.4f} 매도 후 재배치")
+
+
+# ── A4: 긴급 매도 PnL 미기록 ─────────────────────────────
+
+def test_a4_emergency_sell_records_pnl():
+    """A4: emergency_sell() 이 PnL을 state.daily_pnl에 기록해야 한다."""
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+    asyncio.run(_test_a4_emergency_sell_async(engine, ex, state))
+
+
+async def _test_a4_emergency_sell_async(engine, ex, state):
+    await engine.setup_grid()
+    assert engine.total_qty > 0
+
+    pnl_before = state.daily_pnl
+    ex._ticker_price = 101.0  # 약간 상승 (손익 발생)
+
+    await engine.emergency_sell("킬 스위치 테스트")
+
+    assert engine.total_qty == 0, "긴급 매도 후 보유량 잔존"
+    assert engine.is_active is False, "긴급 매도 후 그리드 활성 상태"
+    assert state.daily_pnl != pnl_before, "긴급 매도 PnL 미기록"
+    assert len(engine.buy_orders) == 0, "긴급 매도 후 매수 주문 잔존"
+    assert len(engine.sell_orders) == 0, "긴급 매도 후 매도 주문 잔존"
+    print(f"  [PASS] a4_emergency_sell: PnL={state.daily_pnl:,.0f}원 기록됨")
+
+
+# ── A5: 일일 PnL 자정 리셋 ───────────────────────────────
+
+def test_a5_daily_reset():
+    """A5: BotState.reset_daily() 가 일일 집계 수치를 초기화해야 한다."""
+    from shared_state import BotState
+
+    state = BotState()
+    state.daily_pnl = 25000.0
+    state.trade_count = 7
+    state.win_count = 5
+    state.consecutive_losses = 2
+
+    state.reset_daily()
+
+    assert state.daily_pnl == 0.0, f"daily_pnl 미초기화: {state.daily_pnl}"
+    assert state.trade_count == 0, f"trade_count 미초기화: {state.trade_count}"
+    assert state.win_count == 0, f"win_count 미초기화: {state.win_count}"
+    assert state.consecutive_losses == 0, f"consecutive_losses 미초기화: {state.consecutive_losses}"
+    print("  [PASS] a5_daily_reset: 일일 집계 수치 초기화 완료")
+
+
+# ─────────────────────────────────────────────────────────
 # Phase 3 통합 테스트 (온라인 — 실제 바이낸스 API 호출)
 # ─────────────────────────────────────────────────────────
 
@@ -495,6 +716,19 @@ if __name__ == "__main__":
         test_regrid()
         test_run_executor_kill()
         print("Phase 4 단위 테스트 통과!")
+
+    elif mode == "bugfix":
+        # executor를 기본 config 값(KRW_RATE=1350, SEED=3,000,000)으로 먼저 로드
+        # 이후 config 값을 바꿔도 executor 내 바인딩은 바뀌지 않음 → 버그 재현
+        import executor  # noqa: F401
+        print("=== 버그픽스 단위 테스트 ===")
+        test_a1_krw_rate_runtime_change()
+        test_a1_seed_runtime_change()
+        test_a2_lot_size_precision()
+        test_a3_regrid_sells_existing_position()
+        test_a4_emergency_sell_records_pnl()
+        test_a5_daily_reset()
+        print("버그픽스 단위 테스트 통과!")
 
     elif mode == "scan":
         # 통합 테스트 실행 (온라인)

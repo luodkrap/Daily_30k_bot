@@ -46,6 +46,13 @@ class BotState:
     is_running: bool = False
     exchange: object = None  # ccxt exchange 인스턴스 (seed_cmd에서 잔고 조회용)
 
+    def reset_daily(self) -> None:
+        """자정 일일 집계 수치 초기화. run_executor에서 날짜 변경 감지 시 호출."""
+        self.daily_pnl = 0.0
+        self.trade_count = 0
+        self.win_count = 0
+        self.consecutive_losses = 0
+
     @property
     def win_rate(self) -> float:
         if self.trade_count == 0:
