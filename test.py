@@ -472,6 +472,10 @@ async def _test_a1_krw_rate_async():
     engine = GridEngine("ETH/USDT", ex, state)
     await engine.setup_grid()
 
+    # A8 이후: setup_grid에서 매수 수수료가 즉시 차감됨 → 스냅샷 후 매도 변화량으로 비교
+    pnl_after_setup = state.daily_pnl
+    avg_price_before_sell = engine.avg_price
+
     sell_oid = list(engine.sell_orders.keys())[0]
     sell_info = engine.sell_orders[sell_oid]
     sell_price = sell_info["price"]
@@ -479,18 +483,19 @@ async def _test_a1_krw_rate_async():
     ex.simulate_fill(sell_oid)
     await engine.monitor_orders()
 
-    # net_usdt = (sell_price - avg_price) * qty - fees
-    gross_usdt = (sell_price - engine.avg_price) * sell_qty
-    fee_usdt = (sell_price * sell_qty + engine.avg_price * sell_qty) * 0.001
-    net_usdt = gross_usdt - fee_usdt
-    expected_krw = net_usdt * 2700  # config.KRW_RATE = 2700 반영 기대
+    # 매도 1회 변화량: (sell - avg) * qty - sell_fee
+    gross_usdt = (sell_price - avg_price_before_sell) * sell_qty
+    sell_fee_usdt = sell_price * sell_qty * 0.001
+    net_usdt = gross_usdt - sell_fee_usdt
+    expected_delta_krw = net_usdt * 2700  # config.KRW_RATE = 2700 반영 기대
+    actual_delta = state.daily_pnl - pnl_after_setup
 
-    assert abs(state.daily_pnl - expected_krw) < 0.1, (
+    assert abs(actual_delta - expected_delta_krw) < 0.1, (
         f"KRW_RATE 런타임 변경 미반영: "
-        f"expected {expected_krw:.2f}원 (rate=2700), "
-        f"got {state.daily_pnl:.2f}원"
+        f"expected delta {expected_delta_krw:.2f}원 (rate=2700), "
+        f"got {actual_delta:.2f}원"
     )
-    print(f"  [PASS] a1_krw_rate_runtime_change: {state.daily_pnl:.0f}원 (rate=2700 반영)")
+    print(f"  [PASS] a1_krw_rate_runtime_change: 매도 Δ={actual_delta:.2f}원 (rate=2700 반영)")
 
 
 def test_a1_seed_runtime_change():
@@ -641,6 +646,90 @@ def test_a5_daily_reset():
     print("  [PASS] a5_daily_reset: 일일 집계 수치 초기화 완료")
 
 
+# ── A8: 수수료 이중 차감 정리 ────────────────────────────
+
+def test_a8_setup_grid_buy_fee_deduction():
+    """A8: setup_grid 초기 시장가 매수 직후 매수 수수료가 PnL에 즉시 반영돼야 한다."""
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+    asyncio.run(_test_a8_setup_grid_async(engine, state))
+
+
+async def _test_a8_setup_grid_async(engine, state):
+    import config as cfg
+    from config import FEE_RATE
+
+    await engine.setup_grid()
+
+    # 그리드 매수/매도는 모두 미체결(open) 상태이므로 PnL에는 영향이 없고,
+    # 초기 시장가 매수 수수료만 차감된 상태여야 한다.
+    expected_fee_krw = engine.avg_price * engine.total_qty * FEE_RATE * cfg.KRW_RATE
+    assert abs(state.daily_pnl + expected_fee_krw) < 0.01, (
+        f"매수 수수료 미반영: 예상 {-expected_fee_krw:.4f}, 실제 {state.daily_pnl:.4f}"
+    )
+    print(f"  [PASS] a8_setup_grid: 초기 매수 수수료 {-state.daily_pnl:,.2f}원 즉시 차감")
+
+
+def test_a8_grid_rotation_pnl_accuracy():
+    """A8: 그리드 10회 회전 시 누적 PnL이 이론값과 ±1% 이내로 일치해야 한다."""
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+    asyncio.run(_test_a8_grid_rotation_async(engine, state))
+
+
+async def _test_a8_grid_rotation_async(engine, state):
+    import config as cfg
+    from config import FEE_RATE, GRID_SPACING
+
+    BUY_PRICE = 100.0
+    QTY = 1.0
+    SELL_PRICE = BUY_PRICE * (1 + GRID_SPACING)
+    ROTATIONS = 10
+
+    engine.is_active = True
+    engine.base_price = BUY_PRICE
+
+    for i in range(ROTATIONS):
+        # 잔존 주문 정리 후 매수 1개 → 매도 1개를 직접 호출로 시뮬레이션
+        engine.buy_orders.clear()
+        engine.sell_orders.clear()
+
+        oid_buy = f"buy_{i}"
+        info_buy = {"price": BUY_PRICE, "qty": QTY, "grid_level": 1}
+        engine.buy_orders[oid_buy] = info_buy
+        await engine._handle_buy_fill(oid_buy, info_buy)
+
+        # _handle_buy_fill이 새 매도 주문을 생성 → 그것을 체결시킨다
+        sell_oid = next(iter(engine.sell_orders))
+        sell_info = engine.sell_orders[sell_oid]
+        await engine._handle_sell_fill(sell_oid, sell_info)
+
+    # 회전 1회 이론 PnL (USDT)
+    buy_fee = BUY_PRICE * QTY * FEE_RATE
+    sell_fee = SELL_PRICE * QTY * FEE_RATE
+    grid_profit = (SELL_PRICE - BUY_PRICE) * QTY
+    expected_per_rotation_usdt = grid_profit - buy_fee - sell_fee
+    expected_total_krw = expected_per_rotation_usdt * ROTATIONS * cfg.KRW_RATE
+
+    diff = abs(state.daily_pnl - expected_total_krw)
+    tolerance = abs(expected_total_krw) * 0.01
+    assert diff <= tolerance, (
+        f"10회 회전 PnL 오차 초과: 예상 {expected_total_krw:.2f}원, "
+        f"실제 {state.daily_pnl:.2f}원, 차이 {diff:.2f}원"
+    )
+    assert state.trade_count == ROTATIONS, f"trade_count 불일치: {state.trade_count}"
+    print(f"  [PASS] a8_grid_rotation: 10회 회전 PnL={state.daily_pnl:,.2f}원 "
+          f"(이론 {expected_total_krw:,.2f}원, 오차 {diff:.4f}원)")
+
+
 # ─────────────────────────────────────────────────────────
 # Phase 3 통합 테스트 (온라인 — 실제 바이낸스 API 호출)
 # ─────────────────────────────────────────────────────────
@@ -728,6 +817,8 @@ if __name__ == "__main__":
         test_a3_regrid_sells_existing_position()
         test_a4_emergency_sell_records_pnl()
         test_a5_daily_reset()
+        test_a8_setup_grid_buy_fee_deduction()
+        test_a8_grid_rotation_pnl_accuracy()
         print("버그픽스 단위 테스트 통과!")
 
     elif mode == "scan":

@@ -24,6 +24,7 @@ from config import (
     GRID_COUNT, GRID_SPACING, FEE_RATE, INITIAL_BUY_RATIO,
     MIN_PROFIT_RATIO, REGRID_ENABLED,
     MAX_POSITION_RATE, STOP_LOSS_RATE,
+    RECENT_LOSS_STREAK,
 )
 # KRW_RATE, SEED, DAILY_LOSS_LIMIT 은 런타임 변경 반영을 위해 config.X 로 직접 참조
 from shared_state import BotState
@@ -127,6 +128,10 @@ class GridEngine:
         self.avg_price = fill_price
         self.total_invested = fill_qty * fill_price
 
+        # 초기 시장가 매수 수수료 즉시 PnL 반영 (양방향 수수료 일관성)
+        buy_fee_krw = fill_price * fill_qty * FEE_RATE * config.KRW_RATE
+        self.state.daily_pnl -= buy_fee_krw
+
         # 4. 매도 그리드 배치 (보유 물량 5등분, stepSize 반올림)
         sell_qty_each = self._round_qty(fill_qty / GRID_COUNT)
         for level in range(1, GRID_COUNT + 1):
@@ -194,6 +199,10 @@ class GridEngine:
         self.total_qty += qty
         self.avg_price = (old_cost + price * qty) / self.total_qty if self.total_qty > 0 else 0
 
+        # 매수 수수료 즉시 PnL 반영 (매도 시점에는 매도 수수료만 차감하기 위함)
+        buy_fee_krw = price * qty * FEE_RATE * config.KRW_RATE
+        self.state.daily_pnl -= buy_fee_krw
+
         # 위에 매도 주문 (stepSize 반올림)
         sell_price = price * (1 + GRID_SPACING)
         sell_qty = self._round_qty(qty)
@@ -214,10 +223,10 @@ class GridEngine:
 
         self.total_qty -= qty
 
-        # 수익 계산 (KRW)
+        # 수익 계산 (KRW). 매수 수수료는 _handle_buy_fill / setup_grid에서 이미 차감됨.
         gross_usdt = (sell_price - self.avg_price) * qty
-        fee_usdt = (sell_price * qty + self.avg_price * qty) * FEE_RATE
-        net_usdt = gross_usdt - fee_usdt
+        sell_fee_usdt = sell_price * qty * FEE_RATE
+        net_usdt = gross_usdt - sell_fee_usdt
         net_krw = net_usdt * config.KRW_RATE
 
         self.state.daily_pnl += net_krw
@@ -227,6 +236,7 @@ class GridEngine:
             self.state.consecutive_losses = 0
         else:
             self.state.consecutive_losses += 1
+            check_loss_streak(self.state)
 
         await notify_trade(self.symbol, "SELL", sell_price, net_krw)
 
@@ -255,15 +265,15 @@ class GridEngine:
             self.exchange.create_order,
             self.symbol, "market", "sell", self.total_qty,
         )
-        # 손실 기록 (매수·매도 수수료 모두 반영)
-        loss_usdt = (current_price - self.avg_price) * self.total_qty
-        buy_fee_usdt  = self.avg_price  * self.total_qty * FEE_RATE
-        sell_fee_usdt = current_price   * self.total_qty * FEE_RATE
-        loss_krw = (loss_usdt - buy_fee_usdt - sell_fee_usdt) * config.KRW_RATE
+        # 손실 기록 (매수 수수료는 매수 체결 시점에 이미 차감됨 → 매도 수수료만 반영)
+        gross_usdt = (current_price - self.avg_price) * self.total_qty
+        sell_fee_usdt = current_price * self.total_qty * FEE_RATE
+        loss_krw = (gross_usdt - sell_fee_usdt) * config.KRW_RATE
 
         self.state.daily_pnl += loss_krw
         self.state.trade_count += 1
         self.state.consecutive_losses += 1
+        check_loss_streak(self.state)
 
         await self.cancel_all()
         self.total_qty = 0.0
@@ -286,10 +296,10 @@ class GridEngine:
                 self.symbol, "market", "sell", self.total_qty,
             )
             fill_price = order.get("average") or current_price
-            gross_usdt    = (fill_price - self.avg_price) * self.total_qty
-            buy_fee_usdt  = self.avg_price * self.total_qty * FEE_RATE
-            sell_fee_usdt = fill_price     * self.total_qty * FEE_RATE
-            net_usdt = gross_usdt - buy_fee_usdt - sell_fee_usdt
+            # 매수 수수료는 매수 체결 시점에 이미 차감됨 → 매도 수수료만 반영
+            gross_usdt = (fill_price - self.avg_price) * self.total_qty
+            sell_fee_usdt = fill_price * self.total_qty * FEE_RATE
+            net_usdt = gross_usdt - sell_fee_usdt
             net_krw = net_usdt * config.KRW_RATE
             self.state.daily_pnl += net_krw
             self.state.trade_count += 1
@@ -298,6 +308,7 @@ class GridEngine:
                 self.state.consecutive_losses = 0
             else:
                 self.state.consecutive_losses += 1
+                check_loss_streak(self.state)
             await send(
                 f"[긴급 매도] {reason} — {self.symbol} @ ${fill_price:,.2f}\n"
                 f"손익: {net_krw:,.0f}원"
@@ -335,9 +346,10 @@ class GridEngine:
                 self.exchange.create_order,
                 self.symbol, "market", "sell", self.total_qty,
             )
+            # 매수 수수료는 매수 체결 시점에 이미 차감됨 → 매도 수수료만 반영
             gross_usdt = (current_price - self.avg_price) * self.total_qty
-            fee_usdt = current_price * self.total_qty * FEE_RATE
-            net_usdt = gross_usdt - fee_usdt
+            sell_fee_usdt = current_price * self.total_qty * FEE_RATE
+            net_usdt = gross_usdt - sell_fee_usdt
             net_krw = net_usdt * config.KRW_RATE
             self.state.daily_pnl += net_krw
             self.state.trade_count += 1
@@ -346,6 +358,7 @@ class GridEngine:
                 self.state.consecutive_losses = 0
             else:
                 self.state.consecutive_losses += 1
+                check_loss_streak(self.state)
 
         await self.cancel_all()
         self.total_qty = 0.0
@@ -357,7 +370,7 @@ class GridEngine:
 
 
 async def update_market_filter(state: BotState, exchange) -> None:
-    """BTC 200MA 필터 갱신. 30분마다 호출."""
+    """BTC 200MA + 연속 손실 필터 갱신. 30분마다 호출."""
     try:
         ohlcv = await _retry_api(exchange.fetch_ohlcv, "BTC/USDT", "1d", limit=201)
         if len(ohlcv) < 201:
@@ -365,13 +378,23 @@ async def update_market_filter(state: BotState, exchange) -> None:
         closes = [c[4] for c in ohlcv]
         ma_200 = sum(closes[:-1]) / 200
         current = closes[-1]
+        ma_healthy = current >= ma_200
+
         was_healthy = state.is_market_healthy
-        state.is_market_healthy = current >= ma_200
+        state.is_market_healthy = ma_healthy
         if was_healthy and not state.is_market_healthy:
             await send(f"[시장 필터] BTC 200MA 하회 — 신규 진입 차단\n"
                        f"BTC: ${current:,.0f} < MA200: ${ma_200:,.0f}")
     except Exception as e:
         await notify_error("MarketFilter", e)
+
+
+def check_loss_streak(state: BotState) -> None:
+    """연속 손실 RECENT_LOSS_STREAK회 도달 시 시장 악화 판정.
+    매도 체결·손절·긴급매도 직후 호출. is_market_healthy=False면 should_stop_profit이
+    DAILY_MIN_PROFIT 기준으로 조기 중단을 트리거할 수 있게 해줌."""
+    if state.consecutive_losses >= RECENT_LOSS_STREAK and state.is_market_healthy:
+        state.is_market_healthy = False
 
 
 async def update_krw_rate() -> None:
@@ -478,7 +501,11 @@ async def run_executor(state: BotState, exchange) -> None:
             await engine.monitor_orders()
 
             # ── 11. 리그리딩 체크 ──
-            if engine.is_active and engine.total_qty <= 0 and not engine.sell_orders:
+            # buy_orders 미체결 잔존 시 regrid 실행하면 이중 포지션 위험 → 모든 주문 비어있을 때만
+            if (engine.is_active
+                    and engine.total_qty <= 0
+                    and not engine.sell_orders
+                    and not engine.buy_orders):
                 if REGRID_ENABLED:
                     await engine.regrid()
                 else:

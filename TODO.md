@@ -54,15 +54,21 @@
 
 **치명적 (Critical) — 페이퍼 트레이딩 전 해결**
 - [x] C3: `check_stop_loss()` + `emergency_sell()` 매수 수수료 누락 → 킬 스위치 지연
-- [ ] C4: 리그리딩 트리거 `not engine.buy_orders` 조건 누락 → 이중 포지션 위험
+- [x] C4: 리그리딩 트리거 `not engine.buy_orders` 조건 누락 → 이중 포지션 위험
 - [ ] C1: `setup_grid()` 시장가 매수 → 지정가로 교체 (CLAUDE.md 원칙 위반)
 - [ ] C2: 재시작 시 포지션·주문 상태 복구 로직 없음 → 이중 포지션 위험 (실전 투입 블로커)
 
 **높은 우선순위 (High) — 실전 투입 전 해결**
 - [x] H3: PROJECT.md 로드맵 Phase 4/5 완료 상태 미반영 (CLAUDE.md Rule 1 위반)
+- [x] H4: `asyncio.gather` 컴포넌트 하나 실패 시 전체 봇 중단 → `_supervise()` 패턴으로 격리
 - [ ] H1: `requirements.txt` 없음 → VPS 배포 불가 (실전 투입 블로커)
 - [ ] H2: 텔레그램 플러드 방지 없음 → 오류 루프 시 API 429
-- [ ] H4: `asyncio.gather` 컴포넌트 하나 실패 시 전체 봇 중단
+
+**감사 결과 추가 (2026-04-15)**
+- [x] A6: `regrid()` 매수 수수료 누락 → 양방향 수수료 적용
+- [x] A7: `consecutive_losses → is_market_healthy` 미연동 → `check_loss_streak` 헬퍼 도입
+- [x] A8: `_handle_sell_fill()` 수수료 이중 차감 → 매수 수수료를 매수 체결 시점으로 분리
+- [ ] A9: ATR `SCANNER_CANDLE_LIMIT=15` 부족 → 30으로 확대 (Wilder's Smoothing 동작)
 
 ### Phase 6 — 검증
 

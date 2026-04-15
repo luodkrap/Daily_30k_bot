@@ -121,6 +121,25 @@ async def run_telegram_bot(state: BotState) -> None:
     print("[Telegram] 종료")
 
 
+async def _supervise(name: str, coro_factory, state: BotState, max_restarts: int = 5) -> None:
+    """컴포넌트 코루틴을 감시하고 예외 발생 시 재시작.
+    재시작 한도(max_restarts) 초과 시 킬 이벤트를 set 하여 전체 안전 종료."""
+    restarts = 0
+    while not state.kill_event.is_set():
+        try:
+            await coro_factory()
+            return  # 정상 종료 (자체 루프 break)
+        except Exception as e:
+            restarts += 1
+            await notify_error(f"{name} (재시작 {restarts}/{max_restarts})", e)
+            if restarts >= max_restarts:
+                await send(f"[치명적] {name} 재시작 한도 초과 — 봇 종료")
+                state.kill_event.set()
+                return
+            # executor가 죽으면 잔존 포지션 위험 → 다른 컴포넌트보다 짧은 백오프
+            await asyncio.sleep(3 if name == "executor" else 5)
+
+
 async def main() -> None:
     state = BotState()
     state.is_running = True
@@ -134,14 +153,19 @@ async def main() -> None:
     try:
         await init_session()
         await send("Daily 30K Bot 시작!")
+        # 각 컴포넌트는 supervisor로 격리 — 한 개가 죽어도 나머지는 계속 동작
+        # return_exceptions=True 는 supervisor 자체가 예외를 흘릴 가능성 대비 이중 안전망
         await asyncio.gather(
-            run_screener(state, exchange),
-            run_executor(state, exchange),
-            run_telegram_bot(state),
+            _supervise("screener", lambda: run_screener(state, exchange), state),
+            _supervise("executor", lambda: run_executor(state, exchange), state),
+            _supervise("telegram", lambda: run_telegram_bot(state), state),
+            return_exceptions=True,
         )
     except Exception as e:
         await notify_error("main", e)
     finally:
+        # kill_event가 set되지 않았다면(예: gather가 정상 반환) 강제 set으로 정리 보장
+        state.kill_event.set()
         await exchange.close()
         await close_session()
         print("[Main] 봇 종료 완료")
