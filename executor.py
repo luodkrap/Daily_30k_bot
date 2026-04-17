@@ -85,6 +85,82 @@ class GridEngine:
         except Exception:
             return True
 
+    # ── 공통 헬퍼 ─────────────────────────────────────
+    def _calc_fee(self, price: float, qty: float) -> float:
+        """수수료 계산 (USDT). price × qty × FEE_RATE."""
+        return price * qty * FEE_RATE
+
+    async def _get_current_price(self) -> float:
+        """현재가 조회. fetch_ticker 래퍼."""
+        ticker = await _retry_api(self.exchange.fetch_ticker, self.symbol)
+        return ticker["last"]
+
+    def _record_trade(self, sell_price: float, qty: float) -> float:
+        """매도 PnL 기록 + 승/패 카운터 갱신. 반환: net_krw."""
+        gross_usdt = (sell_price - self.avg_price) * qty
+        net_usdt = gross_usdt - self._calc_fee(sell_price, qty)
+        net_krw = net_usdt * config.KRW_RATE
+
+        self.state.daily_pnl += net_krw
+        self.state.trade_count += 1
+        if net_krw > 0:
+            self.state.win_count += 1
+            self.state.consecutive_losses = 0
+        else:
+            self.state.consecutive_losses += 1
+            check_loss_streak(self.state)
+
+        return net_krw
+
+    # ── 지정가 초기 매수 (미체결 시 재시도) ────────────
+    async def _limit_buy_with_retry(self, buy_usdt: float,
+                                     max_attempts: int = 3,
+                                     timeout: int = 15) -> tuple[float, float]:
+        """현재가 기준 지정가 매수. 미체결 시 가격 재조정 후 재시도.
+        Returns: (fill_price, fill_qty). 실패 시 (0.0, 0.0)."""
+        for attempt in range(max_attempts):
+            if attempt > 0:
+                self.base_price = await self._get_current_price()
+
+            buy_price = self.base_price
+            buy_qty = self._round_qty(buy_usdt / buy_price)
+
+            order = await _retry_api(
+                self.exchange.create_order,
+                self.symbol, "limit", "buy", buy_qty, buy_price,
+            )
+
+            # 즉시 체결 (현재가 지정가 → taker)
+            if order.get("status") == "closed":
+                return (order.get("average") or buy_price,
+                        order.get("filled") or buy_qty)
+
+            # 미체결 대기
+            order_id = order["id"]
+            for _ in range(timeout):
+                await asyncio.sleep(1)
+                try:
+                    open_orders = await _retry_api(
+                        self.exchange.fetch_open_orders, self.symbol,
+                    )
+                    if order_id not in {o["id"] for o in open_orders}:
+                        return (buy_price, buy_qty)
+                except Exception:
+                    pass
+
+            # 타임아웃 → 취소 후 재시도
+            try:
+                await self.exchange.cancel_order(order_id, self.symbol)
+            except Exception:
+                pass
+            if attempt < max_attempts - 1:
+                await send(
+                    f"[그리드] 초기 매수 미체결 — 가격 재조정 "
+                    f"({attempt + 1}/{max_attempts})"
+                )
+
+        return (0.0, 0.0)
+
     # ── 수수료 검증 ──────────────────────────────────
     def validate_fees(self) -> bool:
         """그리드 간격이 왕복 수수료 + 최소 수익을 초과하는지 확인."""
@@ -101,35 +177,30 @@ class GridEngine:
 
     # ── 그리드 초기 설정 ─────────────────────────────
     async def setup_grid(self) -> None:
-        """시장가 50% 매수 → 매도 그리드 5개 + 매수 그리드 5개 배치."""
+        """지정가 50% 매수 → 매도 그리드 5개 + 매수 그리드 5개 배치."""
         # 0. 마켓 정보 로드 (stepSize / MIN_NOTIONAL 정밀도용)
         await self._load_market_info()
 
         # 1. 현재가 조회
-        ticker = await _retry_api(self.exchange.fetch_ticker, self.symbol)
-        self.base_price = ticker["last"]
+        self.base_price = await self._get_current_price()
 
         # 2. 잔고 확인 & 포지션 사이징
         balance = await _retry_api(self.exchange.fetch_balance)
         usdt_free = balance["USDT"]["free"]
         max_invest = self.calc_position_size(usdt_free)
 
-        # 3. 시장가 매수 (50%)
+        # 3. 지정가 매수 (50%) — CLAUDE.md "지정가 우선" 원칙
         buy_usdt = max_invest * INITIAL_BUY_RATIO
-        buy_qty = self._round_qty(buy_usdt / self.base_price)
-
-        order = await _retry_api(
-            self.exchange.create_order,
-            self.symbol, "market", "buy", buy_qty,
-        )
-        fill_price = order["average"] or self.base_price
-        fill_qty = order["filled"]
+        fill_price, fill_qty = await self._limit_buy_with_retry(buy_usdt)
+        if fill_qty <= 0:
+            await send(f"[그리드] {self.symbol} 초기 매수 실패 — 그리드 미배치")
+            return
         self.total_qty = fill_qty
         self.avg_price = fill_price
         self.total_invested = fill_qty * fill_price
 
-        # 초기 시장가 매수 수수료 즉시 PnL 반영 (양방향 수수료 일관성)
-        buy_fee_krw = fill_price * fill_qty * FEE_RATE * config.KRW_RATE
+        # 초기 지정가 매수 수수료 즉시 PnL 반영 (양방향 수수료 일관성)
+        buy_fee_krw = self._calc_fee(fill_price, fill_qty) * config.KRW_RATE
         self.state.daily_pnl -= buy_fee_krw
 
         # 4. 매도 그리드 배치 (보유 물량 5등분, stepSize 반올림)
@@ -200,7 +271,7 @@ class GridEngine:
         self.avg_price = (old_cost + price * qty) / self.total_qty if self.total_qty > 0 else 0
 
         # 매수 수수료 즉시 PnL 반영 (매도 시점에는 매도 수수료만 차감하기 위함)
-        buy_fee_krw = price * qty * FEE_RATE * config.KRW_RATE
+        buy_fee_krw = self._calc_fee(price, qty) * config.KRW_RATE
         self.state.daily_pnl -= buy_fee_krw
 
         # 위에 매도 주문 (stepSize 반올림)
@@ -224,20 +295,7 @@ class GridEngine:
         self.total_qty -= qty
 
         # 수익 계산 (KRW). 매수 수수료는 _handle_buy_fill / setup_grid에서 이미 차감됨.
-        gross_usdt = (sell_price - self.avg_price) * qty
-        sell_fee_usdt = sell_price * qty * FEE_RATE
-        net_usdt = gross_usdt - sell_fee_usdt
-        net_krw = net_usdt * config.KRW_RATE
-
-        self.state.daily_pnl += net_krw
-        self.state.trade_count += 1
-        if net_krw > 0:
-            self.state.win_count += 1
-            self.state.consecutive_losses = 0
-        else:
-            self.state.consecutive_losses += 1
-            check_loss_streak(self.state)
-
+        net_krw = self._record_trade(sell_price, qty)
         await notify_trade(self.symbol, "SELL", sell_price, net_krw)
 
         # 아래에 매수 재배치 (stepSize 반올림)
@@ -266,14 +324,7 @@ class GridEngine:
             self.symbol, "market", "sell", self.total_qty,
         )
         # 손실 기록 (매수 수수료는 매수 체결 시점에 이미 차감됨 → 매도 수수료만 반영)
-        gross_usdt = (current_price - self.avg_price) * self.total_qty
-        sell_fee_usdt = current_price * self.total_qty * FEE_RATE
-        loss_krw = (gross_usdt - sell_fee_usdt) * config.KRW_RATE
-
-        self.state.daily_pnl += loss_krw
-        self.state.trade_count += 1
-        self.state.consecutive_losses += 1
-        check_loss_streak(self.state)
+        loss_krw = self._record_trade(current_price, self.total_qty)
 
         await self.cancel_all()
         self.total_qty = 0.0
@@ -289,26 +340,13 @@ class GridEngine:
     async def emergency_sell(self, reason: str) -> float:
         """보유 물량 전량 시장가 매도 + PnL 기록. 킬 스위치·수익 중단·스위칭 공통."""
         if self.total_qty > 0:
-            ticker = await _retry_api(self.exchange.fetch_ticker, self.symbol)
-            current_price = ticker["last"]
+            current_price = await self._get_current_price()
             order = await _retry_api(
                 self.exchange.create_order,
                 self.symbol, "market", "sell", self.total_qty,
             )
             fill_price = order.get("average") or current_price
-            # 매수 수수료는 매수 체결 시점에 이미 차감됨 → 매도 수수료만 반영
-            gross_usdt = (fill_price - self.avg_price) * self.total_qty
-            sell_fee_usdt = fill_price * self.total_qty * FEE_RATE
-            net_usdt = gross_usdt - sell_fee_usdt
-            net_krw = net_usdt * config.KRW_RATE
-            self.state.daily_pnl += net_krw
-            self.state.trade_count += 1
-            if net_krw > 0:
-                self.state.win_count += 1
-                self.state.consecutive_losses = 0
-            else:
-                self.state.consecutive_losses += 1
-                check_loss_streak(self.state)
+            net_krw = self._record_trade(fill_price, self.total_qty)
             await send(
                 f"[긴급 매도] {reason} — {self.symbol} @ ${fill_price:,.2f}\n"
                 f"손익: {net_krw:,.0f}원"
@@ -340,25 +378,12 @@ class GridEngine:
         """현재가 기준으로 그리드 새로 배치. 기존 보유 물량은 먼저 시장가 매도."""
         # 기존 보유 물량 시장가 매도 (이중 포지션 방지)
         if self.total_qty > 0:
-            ticker = await _retry_api(self.exchange.fetch_ticker, self.symbol)
-            current_price = ticker["last"]
+            current_price = await self._get_current_price()
             await _retry_api(
                 self.exchange.create_order,
                 self.symbol, "market", "sell", self.total_qty,
             )
-            # 매수 수수료는 매수 체결 시점에 이미 차감됨 → 매도 수수료만 반영
-            gross_usdt = (current_price - self.avg_price) * self.total_qty
-            sell_fee_usdt = current_price * self.total_qty * FEE_RATE
-            net_usdt = gross_usdt - sell_fee_usdt
-            net_krw = net_usdt * config.KRW_RATE
-            self.state.daily_pnl += net_krw
-            self.state.trade_count += 1
-            if net_krw > 0:
-                self.state.win_count += 1
-                self.state.consecutive_losses = 0
-            else:
-                self.state.consecutive_losses += 1
-                check_loss_streak(self.state)
+            self._record_trade(current_price, self.total_qty)
 
         await self.cancel_all()
         self.total_qty = 0.0
@@ -489,10 +514,13 @@ async def run_executor(state: BotState, exchange) -> None:
                     await asyncio.sleep(60)
                     continue
                 await engine.setup_grid()
+                if not engine.is_active:
+                    engine = None
+                    await asyncio.sleep(60)
+                    continue
 
             # ── 9. 손절 체크 ──
-            ticker = await _retry_api(exchange.fetch_ticker, engine.symbol)
-            current_price = ticker["last"]
+            current_price = await engine._get_current_price()
             if await engine.check_stop_loss(current_price):
                 engine = None
                 continue

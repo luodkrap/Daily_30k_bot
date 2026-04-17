@@ -115,6 +115,17 @@ class MockExchange:
         self._order_id += 1
         oid = str(self._order_id)
         fill_price = price if price else self._ticker_price
+        # Limit order at/crossing current price fills immediately (taker)
+        if type_ == "market":
+            is_filled = True
+        elif (type_ == "limit" and side == "buy"
+              and price is not None and price >= self._ticker_price):
+            is_filled = True
+        elif (type_ == "limit" and side == "sell"
+              and price is not None and price <= self._ticker_price):
+            is_filled = True
+        else:
+            is_filled = False
         order = {
             "id": oid,
             "symbol": symbol,
@@ -124,7 +135,7 @@ class MockExchange:
             "price": price,
             "filled": amount,
             "average": fill_price,
-            "status": "closed" if type_ == "market" else "open",
+            "status": "closed" if is_filled else "open",
         }
         self._orders[oid] = order
         if order["status"] == "open":
@@ -200,7 +211,7 @@ async def _test_setup_grid_async(engine, ex):
     # 1. 그리드 활성화
     assert engine.is_active is True, "그리드 미활성"
 
-    # 2. 초기 시장가 매수 실행됨 (보유량 > 0)
+    # 2. 초기 지정가 매수 실행됨 (보유량 > 0)
     assert engine.total_qty > 0, f"초기 매수 실패: qty={engine.total_qty}"
 
     # 3. 매도 주문 5개 배치
@@ -708,6 +719,35 @@ async def _test_a8_grid_rotation_async(engine, state):
           f"(이론 {expected_total_krw:,.2f}원, 오차 {diff:.4f}원)")
 
 
+# ── C1: 초기 매수 지정가 전환 ────────────────────────────
+
+def test_c1_setup_grid_uses_limit_buy():
+    """C1: setup_grid() 초기 매수가 지정가(limit) 주문이어야 한다."""
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+    asyncio.run(_test_c1_limit_buy_async(engine, ex))
+
+
+async def _test_c1_limit_buy_async(engine, ex):
+    await engine.setup_grid()
+
+    # 첫 번째 주문이 limit buy여야 한다 (시장가 아님)
+    first_order = ex._orders["1"]
+    assert first_order["type"] == "limit", (
+        f"초기 매수가 시장가 주문: type={first_order['type']}"
+    )
+    assert first_order["side"] == "buy", (
+        f"초기 주문이 매수가 아님: side={first_order['side']}"
+    )
+    assert first_order["price"] is not None, "지정가 주문에 가격 미설정"
+    assert engine.is_active is True, "그리드 미활성"
+    print("  [PASS] c1_setup_grid_limit_buy: 초기 매수 → limit 주문 확인")
+
+
 # ─────────────────────────────────────────────────────────
 # Phase 3 통합 테스트 (온라인 — 실제 바이낸스 API 호출)
 # ─────────────────────────────────────────────────────────
@@ -797,6 +837,7 @@ if __name__ == "__main__":
         test_a5_daily_reset()
         test_a8_setup_grid_buy_fee_deduction()
         test_a8_grid_rotation_pnl_accuracy()
+        test_c1_setup_grid_uses_limit_buy()
         print("버그픽스 단위 테스트 통과!")
 
     elif mode == "scan":
