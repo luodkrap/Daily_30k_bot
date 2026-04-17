@@ -68,7 +68,14 @@
 - [x] A6: `regrid()` 매수 수수료 누락 → 양방향 수수료 적용
 - [x] A7: `consecutive_losses → is_market_healthy` 미연동 → `check_loss_streak` 헬퍼 도입
 - [x] A8: `_handle_sell_fill()` 수수료 이중 차감 → 매수 수수료를 매수 체결 시점으로 분리
-- [ ] A9: ATR `SCANNER_CANDLE_LIMIT=15` 부족 → 30으로 확대 (Wilder's Smoothing 동작)
+- [x] A9: ATR `SCANNER_CANDLE_LIMIT=15` 부족 → 30으로 확대 (Wilder's Smoothing 동작)
+
+**감사 결과 추가 (2026-04-17) — Phase 6 블로커 포함**
+- [ ] B1: `_limit_buy_with_retry` 외부 취소 주문을 체결로 오인 → 공매도 위험 (**Phase 6 블로커**)
+- [ ] B2: `check_stop_loss()` 후 `avg_price` 미초기화 → `emergency_sell`/`regrid`와 일관성 위반
+- [ ] B3: `sell_qty` 총합이 `total_qty` 초과 가능 → stepSize 큰 자산에서 insufficient balance 오류
+- [ ] B5: `stability_score` 임계값 0.05 실효성 없음 → 가중치 20% 사실상 낭비
+- [ ] B7: 캔들 수집 실패 무음 처리 → API 오류 다발 시 후보 코인 집단 탈락 감지 불가
 
 ### Phase 6 — 검증
 

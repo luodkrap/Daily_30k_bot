@@ -328,6 +328,8 @@ class GridEngine:
 
         await self.cancel_all()
         self.total_qty = 0.0
+        self.avg_price = 0.0
+        self.total_invested = 0.0
         self.is_active = False
 
         await send(

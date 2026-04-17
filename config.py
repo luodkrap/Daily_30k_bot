@@ -52,7 +52,7 @@ GRID_SPACING   = 0.005          # 그리드 간격 비율 (0.5%)
 # ─── 스캐너 세부 파라미터 ────────────────────────────────
 MIN_PRICE_USD         = 0.10    # 최소 코인 가격 $0.10 (저가 코인 그리드 매매 부적합)
 SCANNER_SEMAPHORE     = 10      # 병렬 캔들 조회 동시 요청 수
-SCANNER_CANDLE_LIMIT  = 15      # ATR14 계산용 캔들 수 (여유 1개)
+SCANNER_CANDLE_LIMIT  = 30      # ATR14 계산용 캔들 수 (Wilder's Smoothing 워밍업 포함)
 SCANNER_TOP_N         = 5       # 최종 후보 상위 N개
 PUMP_THRESHOLD_3H     = 0.07    # 3시간 내 급등 기준 7%
 PUMP_THRESHOLD_6H     = 0.10    # 6시간 내 급등 기준 10%
