@@ -53,28 +53,32 @@
 > 상세 수정 방법 및 진행 순서 → [WORKFLOW.md](WORKFLOW.md)
 
 **치명적 (Critical) — 페이퍼 트레이딩 전 해결**
+
 - [x] C3: `check_stop_loss()` + `emergency_sell()` 매수 수수료 누락 → 킬 스위치 지연
 - [x] C4: 리그리딩 트리거 `not engine.buy_orders` 조건 누락 → 이중 포지션 위험
 - [x] C1: `setup_grid()` 시장가 매수 → 지정가로 교체 (CLAUDE.md 원칙 위반)
-- [ ] C2: 재시작 시 포지션·주문 상태 복구 로직 없음 → 이중 포지션 위험 (실전 투입 블로커)
+- [x] C2: 재시작 시 포지션·주문 상태 복구 로직 없음 → 이중 포지션 위험 (실전 투입 블로커) (2026-04-21 `recover_state()` 전량정리 방식 — 미체결 주문 취소 + 비-USDT 포지션 시장가 매도, dust 스킵)
 
 **높은 우선순위 (High) — 실전 투입 전 해결**
+
 - [x] H3: PROJECT.md 로드맵 Phase 4/5 완료 상태 미반영 (CLAUDE.md Rule 1 위반)
 - [x] H4: `asyncio.gather` 컴포넌트 하나 실패 시 전체 봇 중단 → `_supervise()` 패턴으로 격리
-- [ ] H1: `requirements.txt` 없음 → VPS 배포 불가 (실전 투입 블로커)
-- [ ] H2: 텔레그램 플러드 방지 없음 → 오류 루프 시 API 429
+- [x] H1: `requirements.txt` 없음 → VPS 배포 불가 (2026-04-17 `pip freeze` 기반 생성)
+- [x] H2: 텔레그램 플러드 방지 없음 → 오류 루프 시 API 429 (2026-04-21 notifier.py에 60s dedup + 1s 간격 스로틀 구현)
 
 **감사 결과 추가 (2026-04-15)**
+
 - [x] A6: `regrid()` 매수 수수료 누락 → 양방향 수수료 적용
 - [x] A7: `consecutive_losses → is_market_healthy` 미연동 → `check_loss_streak` 헬퍼 도입
 - [x] A8: `_handle_sell_fill()` 수수료 이중 차감 → 매수 수수료를 매수 체결 시점으로 분리
 - [x] A9: ATR `SCANNER_CANDLE_LIMIT=15` 부족 → 30으로 확대 (Wilder's Smoothing 동작)
 
 **감사 결과 추가 (2026-04-17) — Phase 6 블로커 포함**
-- [ ] B1: `_limit_buy_with_retry` 외부 취소 주문을 체결로 오인 → 공매도 위험 (**Phase 6 블로커**)
-- [ ] B2: `check_stop_loss()` 후 `avg_price` 미초기화 → `emergency_sell`/`regrid`와 일관성 위반
-- [ ] B3: `sell_qty` 총합이 `total_qty` 초과 가능 → stepSize 큰 자산에서 insufficient balance 오류
-- [ ] B5: `stability_score` 임계값 0.05 실효성 없음 → 가중치 20% 사실상 낭비
+
+- [x] B1: `_limit_buy_with_retry` 외부 취소 주문을 체결로 오인 → 공매도 위험 (2026-04-21 `fetch_order` 폴링으로 전환)
+- [x] B2: `check_stop_loss()` 후 `avg_price` 미초기화 → `emergency_sell`/`regrid`와 일관성 위반 (2026-04-17 avg_price·total_invested 0 초기화)
+- [x] B3: `sell_qty` 총합이 `total_qty` 초과 가능 → stepSize 큰 자산에서 insufficient balance 오류 (2026-04-21 setup_grid 마지막 레벨 잔량 보정 + \_handle_buy_fill 상한 적용)
+- [x] B5: `stability_score` 임계값 0.05 실효성 없음 → 가중치 20% 사실상 낭비 (2026-04-21 후보군 CV min-max 정규화로 전환 — ATR·volume 점수와 동일 방식)
 - [ ] B7: 캔들 수집 실패 무음 처리 → API 오류 다발 시 후보 코인 집단 탈락 감지 불가
 
 ### Phase 6 — 검증

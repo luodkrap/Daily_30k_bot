@@ -238,6 +238,9 @@ def _score_and_rank(passed: list[dict]) -> list[dict]:
     """점수 계산 후 내림차순 정렬, 상위 SCANNER_TOP_N개 반환.
 
     score = atr_score*0.5 + vol_score*0.3 + stability_score*0.2
+      - atr_score       : ATR 범위 중앙값(2.75%)에 가까울수록 높음
+      - vol_score       : 후보군 내 거래량 min-max 정규화
+      - stability_score : 후보군 내 종가 CV min-max 정규화 (낮을수록 박스권)
     """
     atr_mid  = (ATR_MIN_RATE + ATR_MAX_RATE) / 2   # 2.75%
     atr_half = (ATR_MAX_RATE - ATR_MIN_RATE) / 2   # 2.25%
@@ -247,22 +250,35 @@ def _score_and_rank(passed: list[dict]) -> list[dict]:
     v_max = max(vols)
     v_range = max(v_max - v_min, 1)
 
+    # 1차: 각 코인의 종가 CV 사전 계산
     for coin in passed:
-        # ATR 점수: 범위 중앙값에 가까울수록 높음 (그리드 매매에 최적)
-        atr_score = max(0.0, 1.0 - abs(coin["atr_rate"] - atr_mid) / atr_half)
-
-        # 거래량 점수: 후보군 내 min-max 정규화
-        vol_score = (coin["volume"] - v_min) / v_range
-
-        # 가격 안정성 점수: 종가 CV 낮을수록 박스권에 가까움
         closes = [c[4] for c in coin["ohlcv"]]
         mean_p = sum(closes) / len(closes)
         if mean_p > 0:
             std_p = (sum((c - mean_p) ** 2 for c in closes) / len(closes)) ** 0.5
-            cv = std_p / mean_p
-            stability_score = max(0.0, 1.0 - cv / 0.05)
+            coin["_cv"] = std_p / mean_p
         else:
+            coin["_cv"] = float("inf")
+
+    finite_cvs = [c["_cv"] for c in passed if c["_cv"] != float("inf")]
+    if finite_cvs:
+        cv_min = min(finite_cvs)
+        cv_max = max(finite_cvs)
+        cv_range = max(cv_max - cv_min, 1e-9)
+    else:
+        cv_min = 0.0
+        cv_range = 1.0
+
+    # 2차: 점수 합산
+    for coin in passed:
+        atr_score = max(0.0, 1.0 - abs(coin["atr_rate"] - atr_mid) / atr_half)
+        vol_score = (coin["volume"] - v_min) / v_range
+
+        cv = coin.pop("_cv")
+        if cv == float("inf"):
             stability_score = 0.0
+        else:
+            stability_score = 1.0 - (cv - cv_min) / cv_range
 
         coin["score"] = atr_score * 0.5 + vol_score * 0.3 + stability_score * 0.2
 

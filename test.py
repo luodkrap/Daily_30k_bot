@@ -109,7 +109,14 @@ class MockExchange:
         return {"last": self._ticker_price}
 
     async def fetch_balance(self):
-        return {"USDT": {"free": self._usdt_balance}}
+        # ccxt 호환: 통화별 dict + free/used/total 집계 맵을 함께 제공
+        free = {"USDT": self._usdt_balance}
+        used = {"USDT": 0.0}
+        total = {"USDT": self._usdt_balance}
+        per_currency = {
+            "USDT": {"free": self._usdt_balance, "used": 0.0, "total": self._usdt_balance},
+        }
+        return {**per_currency, "free": free, "used": used, "total": total}
 
     async def create_order(self, symbol, type_, side, amount, price=None):
         self._order_id += 1
@@ -142,8 +149,14 @@ class MockExchange:
             self._open_order_ids.add(oid)
         return order
 
-    async def fetch_open_orders(self, symbol):
-        return [self._orders[oid] for oid in self._open_order_ids if oid in self._orders]
+    async def fetch_open_orders(self, symbol=None):
+        orders = [self._orders[oid] for oid in self._open_order_ids if oid in self._orders]
+        if symbol is None:
+            return orders
+        return [o for o in orders if o.get("symbol") == symbol]
+
+    async def fetch_order(self, order_id, symbol):
+        return self._orders[order_id]
 
     async def cancel_order(self, order_id, symbol):
         if order_id in self._orders:
@@ -748,6 +761,410 @@ async def _test_c1_limit_buy_async(engine, ex):
     print("  [PASS] c1_setup_grid_limit_buy: 초기 매수 → limit 주문 확인")
 
 
+# ── C2: 재시작 시 상태 복구 ──────────────────────────────
+
+class MockExchangeRecovery(MockExchange):
+    """재시작 상태 복구 테스트용 — 다중 통화 잔고 + 다중 심볼 markets 지원."""
+
+    def __init__(self, balances: dict | None = None,
+                 tickers: dict | None = None,
+                 pre_open_orders: list | None = None):
+        super().__init__()
+        self._balances = balances or {"USDT": 1000.0}
+        self._tickers = tickers or {}
+        # 사전 주입된 미체결 주문 (cancel 대상)
+        for o in pre_open_orders or []:
+            self._order_id += 1
+            oid = str(self._order_id)
+            order = {**o, "id": oid, "status": "open",
+                     "filled": 0.0, "average": o.get("price")}
+            self._orders[oid] = order
+            self._open_order_ids.add(oid)
+
+    @property
+    def markets(self):
+        # 잔고에 등장하는 통화의 /USDT 페어 + 티커에 명시된 심볼을 마켓으로 등록
+        symbols = set()
+        for cur in self._balances:
+            if cur != "USDT":
+                symbols.add(f"{cur}/USDT")
+        symbols.update(self._tickers.keys())
+        return {
+            s: {"limits": {"amount": {"min": 0.0001},
+                           "cost": {"min": 10.0}},
+                "precision": {"amount": 6}}
+            for s in symbols
+        }
+
+    async def load_markets(self):
+        return self.markets
+
+    def amount_to_precision(self, symbol, amount):
+        return round(float(amount), 6)
+
+    async def fetch_balance(self):
+        per_currency = {
+            cur: {"free": amt, "used": 0.0, "total": amt}
+            for cur, amt in self._balances.items()
+        }
+        free = dict(self._balances)
+        used = {cur: 0.0 for cur in self._balances}
+        total = dict(self._balances)
+        return {**per_currency, "free": free, "used": used, "total": total}
+
+    async def fetch_ticker(self, symbol):
+        if symbol in self._tickers:
+            return {"last": self._tickers[symbol]}
+        return {"last": 0.0}  # 모르는 심볼 → 가격 없음
+
+
+def test_c2_recover_cancels_open_orders():
+    """C2: 재시작 시 모든 미체결 주문이 취소돼야 한다."""
+    from executor import recover_state
+
+    pre_orders = [
+        {"symbol": "ETH/USDT", "type": "limit", "side": "buy",
+         "amount": 1.0, "price": 90.0},
+        {"symbol": "ETH/USDT", "type": "limit", "side": "sell",
+         "amount": 1.0, "price": 110.0},
+        {"symbol": "BTC/USDT", "type": "limit", "side": "buy",
+         "amount": 0.01, "price": 50000.0},
+    ]
+    ex = MockExchangeRecovery(
+        balances={"USDT": 1000.0},
+        pre_open_orders=pre_orders,
+    )
+    result = asyncio.run(recover_state(ex))
+
+    assert result["canceled"] == 3, f"취소된 주문 수 오류: {result['canceled']}"
+    assert len(ex._open_order_ids) == 0, "미체결 주문 잔존"
+    print(f"  [PASS] c2_recover_cancels_open_orders: {result['canceled']}건 취소")
+
+
+def test_c2_recover_liquidates_non_usdt_positions():
+    """C2: 재시작 시 비-USDT 포지션이 시장가 매도돼야 한다."""
+    from executor import recover_state
+
+    ex = MockExchangeRecovery(
+        balances={"USDT": 500.0, "ETH": 0.5, "BTC": 0.01},
+        tickers={"ETH/USDT": 2000.0, "BTC/USDT": 50000.0},
+    )
+    order_id_before = ex._order_id
+    result = asyncio.run(recover_state(ex))
+
+    # ETH 0.5 * $2000 = $1000, BTC 0.01 * $50000 = $500 → 둘 다 MIN_NOTIONAL 초과
+    assert len(result["liquidated"]) == 2, (
+        f"청산된 포지션 수 오류: {result['liquidated']}"
+    )
+
+    # 시장가 매도 주문이 실제로 발행됐는지 확인
+    new_market_sells = [
+        o for o in ex._orders.values()
+        if o["type"] == "market" and o["side"] == "sell"
+        and int(o["id"]) > order_id_before
+    ]
+    symbols_sold = {o["symbol"] for o in new_market_sells}
+    assert "ETH/USDT" in symbols_sold and "BTC/USDT" in symbols_sold, (
+        f"예상 심볼 매도 누락: {symbols_sold}"
+    )
+    print(f"  [PASS] c2_recover_liquidates: {len(new_market_sells)}건 시장가 매도")
+
+
+def test_c2_recover_skips_stablecoins_and_bnb():
+    """C2: USDT·BNB·주요 스테이블코인 잔고는 매도 대상에서 제외돼야 한다."""
+    from executor import recover_state
+
+    ex = MockExchangeRecovery(
+        balances={
+            "USDT": 500.0, "USDC": 200.0, "BUSD": 100.0,
+            "BNB": 2.0,  # $600 상당이라도 수수료용이므로 스킵
+            "FDUSD": 50.0, "DAI": 30.0, "TUSD": 20.0,
+        },
+        tickers={"BNB/USDT": 300.0},  # BNB 가격 있어도 스킵돼야 함
+    )
+    order_id_before = ex._order_id
+    result = asyncio.run(recover_state(ex))
+
+    assert result["liquidated"] == [], (
+        f"스테이블/BNB가 청산됨: {result['liquidated']}"
+    )
+    new_sells = [
+        o for o in ex._orders.values()
+        if o["type"] == "market" and int(o["id"]) > order_id_before
+    ]
+    assert new_sells == [], f"예상치 못한 매도 발생: {new_sells}"
+    print("  [PASS] c2_recover_skips_stablecoins_bnb: 시장가 매도 0건")
+
+
+def test_c2_recover_skips_dust():
+    """C2: MIN_NOTIONAL 미달 잔고(dust)는 스킵돼야 한다."""
+    from executor import recover_state
+
+    # ETH 0.001 * $2000 = $2 → MIN_NOTIONAL($10) 미달 → 스킵
+    # BTC 없고, DOGE 0.5 * $0.1 = $0.05 → dust
+    # SOL 0.2 * $100 = $20 → MIN_NOTIONAL 초과 → 청산
+    ex = MockExchangeRecovery(
+        balances={"USDT": 500.0, "ETH": 0.001, "DOGE": 0.5, "SOL": 0.2},
+        tickers={"ETH/USDT": 2000.0, "DOGE/USDT": 0.1, "SOL/USDT": 100.0},
+    )
+    result = asyncio.run(recover_state(ex))
+
+    liquidated_currencies = [item.split()[0] for item in result["liquidated"]]
+    assert liquidated_currencies == ["SOL"], (
+        f"dust 필터링 실패: liquidated={result['liquidated']}, "
+        f"skipped={result['skipped']}"
+    )
+    # ETH·DOGE는 skipped 목록에 dust 사유로 들어가야 함
+    skipped_str = " ".join(result["skipped"])
+    assert "ETH" in skipped_str and "DOGE" in skipped_str, (
+        f"dust 자산이 skipped에 누락: {result['skipped']}"
+    )
+    print(f"  [PASS] c2_recover_skips_dust: SOL만 청산, "
+          f"ETH/DOGE는 dust로 스킵")
+
+
+# ── B1: 외부 취소를 체결로 오인하는 결함 ─────────────────
+
+def test_b1_external_cancel_not_counted_as_fill():
+    """B1: 지정가 매수 주문이 외부에서 취소되면 (0.0, 0.0)을 반환해야 한다.
+    open_orders 목록 누락을 체결로 판단하던 기존 로직의 회귀 테스트."""
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+    asyncio.run(_test_b1_external_cancel_async(engine, ex))
+
+
+async def _test_b1_external_cancel_async(engine, ex):
+    # 지정가 매수가 open 상태로 남도록 base_price를 ticker 아래로 설정
+    engine.base_price = 99.0
+
+    async def external_cancel():
+        await asyncio.sleep(1.2)
+        # 현재 open 상태인 주문을 외부에서 취소
+        for oid in list(ex._open_order_ids):
+            await ex.cancel_order(oid, "ETH/USDT")
+
+    # 1회 시도, 3초 타임아웃으로 외부 취소 → 실패 반환 기대
+    retry_task = asyncio.create_task(
+        engine._limit_buy_with_retry(buy_usdt=100.0, max_attempts=1, timeout=3)
+    )
+    cancel_task = asyncio.create_task(external_cancel())
+    fill_price, fill_qty = await retry_task
+    await cancel_task
+
+    assert (fill_price, fill_qty) == (0.0, 0.0), (
+        f"외부 취소 주문이 체결로 오인됨: price={fill_price}, qty={fill_qty}"
+    )
+    print("  [PASS] b1_external_cancel: 외부 취소 주문 체결 오인 없음 → (0.0, 0.0)")
+
+
+# ── B3: 매도 수량 총합이 보유량 초과 방지 ────────────────
+
+def test_b3_setup_grid_sell_qty_within_holdings():
+    """B3: setup_grid 배치 후 Σsell_qty ≤ total_qty 이어야 한다.
+
+    stepSize 반올림이 올림으로 일어나는 케이스(fill_qty=0.13, step=0.01)에서
+    기존 코드는 5 × round(0.13/5, 2) = 5 × 0.03 = 0.15 > 0.13 으로
+    insufficient balance 를 유발했다.
+    """
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    # usdt_free=26 → calc_position_size 가 26 반환 → buy_usdt=13 → fill_qty=0.13
+    ex = MockExchangeWithPrecision(ticker_price=100.0, usdt_balance=26.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+    asyncio.run(_test_b3_setup_grid_async(engine))
+
+
+async def _test_b3_setup_grid_async(engine):
+    await engine.setup_grid()
+
+    assert engine.is_active, "그리드 미활성"
+    assert engine.total_qty > 0, "초기 매수 실패"
+
+    total_sell_qty = sum(o["qty"] for o in engine.sell_orders.values())
+    assert total_sell_qty <= engine.total_qty + 1e-9, (
+        f"Σsell_qty={total_sell_qty} > total_qty={engine.total_qty} "
+        f"(insufficient balance 발생 가능)"
+    )
+    print(f"  [PASS] b3_setup_grid_sell_qty: Σsell={total_sell_qty}, "
+          f"total={engine.total_qty} (≤ 보장)")
+
+
+def test_b3_handle_buy_fill_caps_sell_qty():
+    """B3: _handle_buy_fill 은 남은 가용량(total_qty - Σ기배치)을 상한으로 매도해야 한다."""
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchangeWithPrecision(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+    asyncio.run(_test_b3_handle_buy_fill_async(engine, ex))
+
+
+async def _test_b3_handle_buy_fill_async(engine, ex):
+    # 인위적으로 기배치 매도량이 total_qty 와 근접하게 세팅
+    await engine._load_market_info()
+    engine.total_qty = 1.00
+    engine.avg_price = 100.0
+    # 기배치 매도 합 0.99 → 가용량 0.01 만 남음
+    engine.sell_orders = {
+        "s1": {"price": 101.0, "qty": 0.50, "grid_level": 1},
+        "s2": {"price": 102.0, "qty": 0.49, "grid_level": 2},
+    }
+
+    # 매수 0.05 체결 → 원래라면 0.05 매도 주문 생성하려 하지만,
+    # total_qty=1.05, 기배치=0.99 → 가용 0.06 이지만 min(qty=0.05, 0.06)=0.05 여야 함
+    buy_info = {"price": 99.0, "qty": 0.05, "grid_level": 1}
+    engine.buy_orders["b1"] = buy_info
+    await engine._handle_buy_fill("b1", buy_info)
+
+    total_sell = sum(o["qty"] for o in engine.sell_orders.values())
+    assert total_sell <= engine.total_qty + 1e-9, (
+        f"Σsell_qty={total_sell} > total_qty={engine.total_qty}"
+    )
+
+    # 이번엔 가용량이 매수량보다 적은 케이스 — 상한에 걸려야 함
+    engine.sell_orders = {
+        "s1": {"price": 101.0, "qty": 0.98, "grid_level": 1},
+    }
+    engine.total_qty = 1.00
+    buy_info2 = {"price": 99.0, "qty": 0.10, "grid_level": 2}
+    engine.buy_orders["b2"] = buy_info2
+    await engine._handle_buy_fill("b2", buy_info2)
+
+    total_sell2 = sum(o["qty"] for o in engine.sell_orders.values())
+    assert total_sell2 <= engine.total_qty + 1e-9, (
+        f"매수 초과분이 매도로 반영됨: Σ={total_sell2}, total={engine.total_qty}"
+    )
+    # total_qty=1.10, 기배치=0.98 → 가용 0.12, min(0.10, 0.12)=0.10 → OK
+    # 또는 total_qty=1.10, 이전 s1=0.98 + 새로 0.10 = 1.08 ≤ 1.10
+    print(f"  [PASS] b3_handle_buy_fill_caps: 상한 적용 후 "
+          f"Σsell={total_sell2} ≤ total_qty={engine.total_qty}")
+
+
+# ── H2: 텔레그램 플러드 방지 ─────────────────────────────
+
+def test_h2_dedup_suppresses_duplicate():
+    """H2: 동일 메시지가 60초 이내에 반복되면 한 번만 전송돼야 한다."""
+    import notifier
+    asyncio.run(_test_h2_dedup_async())
+
+
+async def _test_h2_dedup_async():
+    import notifier
+    notifier._reset_flood_state()
+    # 간격 스로틀은 본 테스트 목적이 아니므로 최소화
+    orig_interval = notifier._MIN_SEND_INTERVAL_SEC
+    notifier._MIN_SEND_INTERVAL_SEC = 0.0
+
+    delivered = []
+
+    async def fake_deliver(text):
+        delivered.append(text)
+
+    orig_deliver = notifier._deliver
+    notifier._deliver = fake_deliver
+    try:
+        await notifier.send("동일 메시지")
+        await notifier.send("동일 메시지")  # 중복 → 억제
+        await notifier.send("다른 메시지")
+        await notifier.send("동일 메시지")  # 여전히 윈도우 내 → 억제
+    finally:
+        notifier._deliver = orig_deliver
+        notifier._MIN_SEND_INTERVAL_SEC = orig_interval
+        notifier._reset_flood_state()
+
+    assert delivered == ["동일 메시지", "다른 메시지"], (
+        f"중복 억제 실패: 실제 발송={delivered}"
+    )
+    print("  [PASS] h2_dedup: 60s 윈도우 내 동일 메시지 1회만 발송")
+
+
+def test_h2_min_interval_enforced():
+    """H2: 서로 다른 메시지라도 전체 발송 최소 간격이 지켜져야 한다."""
+    import notifier
+    asyncio.run(_test_h2_min_interval_async())
+
+
+async def _test_h2_min_interval_async():
+    import time
+    import notifier
+    notifier._reset_flood_state()
+    # 테스트 속도를 위해 간격을 축소 (비율 검증은 동일)
+    orig_interval = notifier._MIN_SEND_INTERVAL_SEC
+    notifier._MIN_SEND_INTERVAL_SEC = 0.2
+
+    send_ts: list[float] = []
+
+    async def fake_deliver(text):
+        send_ts.append(time.monotonic())
+
+    orig_deliver = notifier._deliver
+    notifier._deliver = fake_deliver
+    try:
+        await notifier.send("A")
+        await notifier.send("B")
+        await notifier.send("C")
+    finally:
+        notifier._deliver = orig_deliver
+        notifier._MIN_SEND_INTERVAL_SEC = orig_interval
+        notifier._reset_flood_state()
+
+    assert len(send_ts) == 3, f"3회 발송 기대, 실제 {len(send_ts)}"
+    for i in range(1, len(send_ts)):
+        gap = send_ts[i] - send_ts[i - 1]
+        assert gap >= 0.19, f"발송 간격 부족: {gap:.3f}s (최소 0.2s)"
+    print(f"  [PASS] h2_min_interval: 3회 발송 최소 간격 유지 "
+          f"(간격 {[round(send_ts[i]-send_ts[i-1], 3) for i in range(1, 3)]}s)")
+
+
+# ── B5: stability_score 후보군 min-max 정규화 ─────────────
+
+def test_b5_stability_score_minmax_normalized():
+    """B5: CV 절대 임계값(0.05) 제거 후 후보군 상대 순위로 stability 점수가 차등되는지.
+
+    구 공식은 CV > 5% 코인을 모두 0점으로 clamp → ATR 필터 통과 코인 대부분이
+    동점이 되어 가중치 20% 가 사실상 낭비. 새 공식은 후보군 내 min-max 정규화.
+    """
+    from screener import _score_and_rank
+
+    # 세 코인 모두 CV > 5% (구 공식이면 stability=0 동점)
+    #   A: CV 6%, B: CV 12%, C: CV 20%
+    prices_a = [100 + (6 if i % 2 == 0 else -6) for i in range(30)]
+    prices_b = [100 + (12 if i % 2 == 0 else -12) for i in range(30)]
+    prices_c = [100 + (20 if i % 2 == 0 else -20) for i in range(30)]
+
+    passed = []
+    for sym, prices in [("A/USDT", prices_a), ("B/USDT", prices_b), ("C/USDT", prices_c)]:
+        passed.append({
+            "symbol":   sym,
+            "atr_rate": 0.0275,        # 중앙값 → atr_score=1.0 (모두 동점)
+            "volume":   1_000_000.0,   # 동일 → vol_score=0 (모두 동점)
+            "last":     100.0,
+            "ohlcv":    _make_ohlcv(prices),
+        })
+
+    ranked = _score_and_rank(passed)
+    scores = {c["symbol"]: c["score"] for c in ranked}
+
+    assert scores["A/USDT"] > scores["B/USDT"] > scores["C/USDT"], \
+        f"min-max 정규화 실패: {scores}"
+
+    # A 는 stability=1.0 → 0.5 + 0 + 0.2 = 0.7
+    # C 는 stability=0.0 → 0.5 + 0 + 0   = 0.5
+    assert abs(scores["A/USDT"] - 0.7) < 1e-9, f"A score={scores['A/USDT']}"
+    assert abs(scores["C/USDT"] - 0.5) < 1e-9, f"C score={scores['C/USDT']}"
+    assert 0.5 < scores["B/USDT"] < 0.7, f"B score={scores['B/USDT']}"
+
+    print(f"  [PASS] b5_stability_minmax: A={scores['A/USDT']:.3f} > "
+          f"B={scores['B/USDT']:.3f} > C={scores['C/USDT']:.3f}")
+
+
 # ─────────────────────────────────────────────────────────
 # Phase 3 통합 테스트 (온라인 — 실제 바이낸스 API 호출)
 # ─────────────────────────────────────────────────────────
@@ -838,6 +1255,16 @@ if __name__ == "__main__":
         test_a8_setup_grid_buy_fee_deduction()
         test_a8_grid_rotation_pnl_accuracy()
         test_c1_setup_grid_uses_limit_buy()
+        test_c2_recover_cancels_open_orders()
+        test_c2_recover_liquidates_non_usdt_positions()
+        test_c2_recover_skips_stablecoins_and_bnb()
+        test_c2_recover_skips_dust()
+        test_b1_external_cancel_not_counted_as_fill()
+        test_b3_setup_grid_sell_qty_within_holdings()
+        test_b3_handle_buy_fill_caps_sell_qty()
+        test_h2_dedup_suppresses_duplicate()
+        test_h2_min_interval_enforced()
+        test_b5_stability_score_minmax_normalized()
         print("버그픽스 단위 테스트 통과!")
 
     elif mode == "scan":

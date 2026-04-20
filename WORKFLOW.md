@@ -9,11 +9,11 @@
 
 | 항목 | 값 |
 |------|----|
-| **현재 Phase** | Phase 5 (핵심 로직 완성) → Phase 6 (페이퍼 트레이딩) 진입 대기 |
+| **현재 Phase** | Phase 5 완료 → Phase 6 (페이퍼 트레이딩) 진입 가능 |
 | **마지막 점검** | 2026-04-17 (project-auditor 전체 감사) |
 | **점검 누적** | 2/3 |
-| **남은 블로커** | C2(상태 복구), B1(_limit_buy_with_retry 결함) — 이 2개 해결 전 Phase 6 진입 불가 |
-| **테스트 상태** | 전체 통과 (2026-04-17 C1 작업 후 확인) |
+| **남은 블로커** | 없음 — C2(상태 복구) 해결됨 |
+| **테스트 상태** | 전체 통과 (2026-04-21 B5 작업 후 확인) |
 
 ---
 
@@ -60,45 +60,29 @@ python main.py
 
 | 날짜 | 파일 | 변경 이유 |
 |------|------|-----------|
+| 2026-04-21 | [screener.py](screener.py), [test.py](test.py) | B5: `_score_and_rank()` stability_score 를 후보군 CV min-max 정규화로 전환 (구 공식 `1 - cv/0.05` 는 CV>5% 코인을 전부 0점 clamp → 가중치 20% 실효성 없음) |
+| 2026-04-21 | [executor.py](executor.py), [test.py](test.py) | B3: setup_grid 마지막 레벨에 `fill_qty - placed_sum` 잔량 사용 + _handle_buy_fill 에 `total_qty - Σ기배치` 상한 적용 (stepSize 반올림 누적으로 Σsell_qty > total_qty 되던 insufficient balance 결함 방지) |
+| 2026-04-21 | [executor.py](executor.py), [test.py](test.py) | C2: `recover_state()` 추가 — 재시작 시 미체결 주문 취소 + 비-USDT 포지션 청산 (Phase 6 블로커 해소) |
+| 2026-04-21 | [notifier.py](notifier.py), [test.py](test.py) | H2: 동일 메시지 60초 dedup + 발송 최소 1초 간격 스로틀 (텔레그램 429 방지) |
+| 2026-04-21 | [executor.py](executor.py), [test.py](test.py) | B1: `_limit_buy_with_retry` `fetch_order` 기반 폴링으로 전환 — 외부 취소를 체결로 오인하던 결함 제거 |
 | 2026-04-20 | [CLAUDE.md](CLAUDE.md), [.claudeignore](.claudeignore), [skills/](skills/) | 토큰 절약 구조 개편: .claudeignore 추가, CLAUDE.md 슬림화, 자동점검·문서화·컨벤션을 skills/로 분리 |
 | 2026-04-17 | [executor.py](executor.py) | B2: `check_stop_loss()` avg_price·total_invested 0 초기화 추가 |
 | 2026-04-17 | [requirements.txt](requirements.txt) | H1: `pip freeze` 기반 requirements.txt 생성 (VPS 배포 준비) |
 | 2026-04-17 | [config.py](config.py) | A9: `SCANNER_CANDLE_LIMIT` 15→30 (Wilder's Smoothing 워밍업 확보) |
 | 2026-04-17 | [executor.py](executor.py) | C1: `setup_grid()` 시장가→지정가 전환, `_limit_buy_with_retry` 헬퍼 추가 |
 | 2026-04-17 | [test.py](test.py) | C1: 지정가 매수 단위 테스트 1건 추가 |
-| 2026-04-15 | [executor.py](executor.py) | C4+A6+A7+A8: regrid 이중 포지션 방지, 수수료 모델 일원화, 연패 감지 |
-| 2026-04-15 | [main.py](main.py) | H4: `_supervise()` 자동 재시작 패턴 도입 |
 
 ---
 
 ## 다음 작업 목록 (우선순위 순)
 
-### B1 — _limit_buy_with_retry 미체결 감지 결함 `보통 ~1~2시간`
-**파일:** [executor.py](executor.py) `:146`  
-**문제:** `open_orders`에 없으면 "체결"로 판단 → 외부 취소된 주문도 체결로 오인 → 미보유 수량에 매도 그리드 배치 → **공매도 위험** → **Phase 6 블로커**  
-**수정 방향:** `fetch_order(order_id)` 호출로 `status`와 `filled` 수량 직접 확인. `status=="canceled"` → 재시도, `status=="closed"` → `filled` 수량 반환  
-**완료 기준:** 취소 주문 케이스 테스트 추가 + `python test.py` 통과
+### Phase 6 — 페이퍼 트레이딩 `다음 단계`
+모든 치명적 블로커 해소 완료. 소액 시드(예: 50만원)로 실전 투입 준비. [TODO.md](TODO.md) 참조.
 
 ---
 
-### H2 — 텔레그램 플러드 방지 `쉬움 ~30분`
-**파일:** [notifier.py](notifier.py)  
-**문제:** 오류 루프 시 텔레그램 API 429 (Too Many Requests) 가능  
-**수정 방향:** 동일 메시지 60초 이내 중복 억제 (dedup dict) + 전체 발송 최소 간격 1초
-
----
-
-### C2 — 재시작 시 상태 복구 로직 `어려움 ~3~4시간`
-**문제:** 봇 재시작 시 이전 포지션·주문 복구 없음 → 이중 포지션 위험 → **Phase 6 블로커**  
-**수정 방향:**
-1. `fetch_open_orders` — 미체결 주문 조회
-2. `fetch_balance` — 기존 포지션 잔고 조회
-3. 이전 상태 복원 or 전량 정리 후 재시작
-
----
-
-### Phase 6 — 페이퍼 트레이딩
-위의 블로커 항목 모두 해결 후 진행. [TODO.md](TODO.md) 참조.
+### B7 — 캔들 수집 실패 감지 `낮음 ~30분`
+무음 처리되는 API 오류 누적 시 후보 집단 탈락 감지 불가. 실패율 임계치 넘으면 알림.
 
 ---
 
@@ -109,6 +93,11 @@ python main.py
 
 | 날짜 | ID | 내용 |
 |------|----|------|
+| 2026-04-21 | B5 | `screener.py` — `_score_and_rank()` stability_score 를 후보군 CV min-max 정규화로 전환. 구 공식 `max(0, 1 - cv/0.05)` 은 CV>5% 코인을 전부 0점 clamp → 가중치 20% 실효 없음. ATR·volume 점수와 동일한 상대 정규화 방식으로 통일. 회귀 테스트 1건 (`test_b5_stability_score_minmax_normalized`) |
+| 2026-04-21 | B3 | `executor.py` — `setup_grid()` 마지막 레벨에 `fill_qty - placed_sum` 잔량 사용. `_handle_buy_fill()` 에 `total_qty - Σ기배치` 상한 적용. stepSize 반올림 누적으로 매도 총합이 보유량 초과하던 insufficient balance 결함 제거. 회귀 테스트 2건 (`test_b3_setup_grid_sell_qty_within_holdings`, `test_b3_handle_buy_fill_caps_sell_qty`) |
+| 2026-04-21 | C2 | `executor.py` — `recover_state()` 추가. 재시작 시 전 심볼 미체결 주문 취소 + 비-USDT/BNB/스테이블 잔고 시장가 매도 (MIN_NOTIONAL 미달 dust 스킵). `run_executor` 메인 루프 진입 전 1회 실행. 회귀 테스트 4건 (`MockExchangeRecovery` subclass) |
+| 2026-04-21 | H2 | `notifier.py` — 동일 메시지 60초 dedup + 전체 발송 최소 1초 간격 스로틀. `_deliver` hook 분리로 테스트 격리. 회귀 테스트 2건 추가 |
+| 2026-04-21 | B1 | `executor.py` — `_limit_buy_with_retry` `fetch_order` 기반 폴링. 외부 취소/부분체결/filled=0 closed 엣지 분기. `test.py` 회귀 테스트 추가 |
 | 2026-04-17 | B2 | `executor.py` — `check_stop_loss()` avg_price·total_invested 미초기화 수정. emergency_sell/regrid와 일관성 확보 |
 | 2026-04-17 | B2 | `executor.py` — `check_stop_loss()` `avg_price`·`total_invested` 미초기화 수정 |
 | 2026-04-17 | A9 | `config.py` — `SCANNER_CANDLE_LIMIT` 15→30 변경. Wilder's Smoothing 워밍업 확보 |

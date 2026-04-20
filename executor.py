@@ -130,29 +130,44 @@ class GridEngine:
                 self.symbol, "limit", "buy", buy_qty, buy_price,
             )
 
-            # 즉시 체결 (현재가 지정가 → taker)
-            if order.get("status") == "closed":
+            # 즉시 체결 (현재가 지정가 → taker). filled=0 은 체결로 간주하지 않음.
+            if order.get("status") == "closed" and (order.get("filled") or 0) > 0:
                 return (order.get("average") or buy_price,
                         order.get("filled") or buy_qty)
 
-            # 미체결 대기
+            # 미체결 대기 — fetch_order 로 status/filled 를 직접 확인
             order_id = order["id"]
+            external_cancel = False
             for _ in range(timeout):
                 await asyncio.sleep(1)
                 try:
-                    open_orders = await _retry_api(
-                        self.exchange.fetch_open_orders, self.symbol,
+                    fetched = await _retry_api(
+                        self.exchange.fetch_order, order_id, self.symbol,
                     )
-                    if order_id not in {o["id"] for o in open_orders}:
-                        return (buy_price, buy_qty)
+                except Exception:
+                    continue
+
+                status = fetched.get("status")
+                filled = fetched.get("filled") or 0.0
+                avg = fetched.get("average") or buy_price
+
+                if status == "closed":
+                    if filled > 0:
+                        return (avg, filled)
+                    # closed 인데 filled=0 → 취소로 처리하고 재시도
+                    external_cancel = True
+                    break
+                if status == "canceled":
+                    external_cancel = True
+                    break
+                # status == "open" / "partial" 등은 계속 대기
+
+            # 타임아웃 또는 외부 취소 → 정리 후 재시도
+            if not external_cancel:
+                try:
+                    await self.exchange.cancel_order(order_id, self.symbol)
                 except Exception:
                     pass
-
-            # 타임아웃 → 취소 후 재시도
-            try:
-                await self.exchange.cancel_order(order_id, self.symbol)
-            except Exception:
-                pass
             if attempt < max_attempts - 1:
                 await send(
                     f"[그리드] 초기 매수 미체결 — 가격 재조정 "
@@ -204,18 +219,24 @@ class GridEngine:
         self.state.daily_pnl -= buy_fee_krw
 
         # 4. 매도 그리드 배치 (보유 물량 5등분, stepSize 반올림)
+        # 마지막 레벨은 fill_qty - 기배치합계 잔량 사용 → Σsell_qty ≤ total_qty 보장
+        # (반올림 누적으로 총합이 보유량을 초과해 insufficient balance가 나던 B3 결함 방지)
         sell_qty_each = self._round_qty(fill_qty / GRID_COUNT)
+        placed_sell = 0.0
         for level in range(1, GRID_COUNT + 1):
             price = self.base_price * (1 + GRID_SPACING * level)
-            if not self._check_min_notional(sell_qty_each, price):
-                continue  # MIN_NOTIONAL 미달 레벨 스킵
+            qty = (self._round_qty(fill_qty - placed_sell)
+                   if level == GRID_COUNT else sell_qty_each)
+            if qty <= 0 or not self._check_min_notional(qty, price):
+                continue  # MIN_NOTIONAL 미달·잔량 소진 레벨 스킵
             sell_order = await _retry_api(
                 self.exchange.create_order,
-                self.symbol, "limit", "sell", sell_qty_each, price,
+                self.symbol, "limit", "sell", qty, price,
             )
             self.sell_orders[sell_order["id"]] = {
-                "price": price, "qty": sell_qty_each, "grid_level": level,
+                "price": price, "qty": qty, "grid_level": level,
             }
+            placed_sell += qty
 
         # 5. 매수 그리드 배치 (나머지 50% 5등분, stepSize 반올림)
         remaining_usdt = max_invest - buy_usdt
@@ -274,9 +295,11 @@ class GridEngine:
         buy_fee_krw = self._calc_fee(price, qty) * config.KRW_RATE
         self.state.daily_pnl -= buy_fee_krw
 
-        # 위에 매도 주문 (stepSize 반올림)
+        # 위에 매도 주문 (stepSize 반올림, 보유량 초과 방지 상한 적용)
         sell_price = price * (1 + GRID_SPACING)
-        sell_qty = self._round_qty(qty)
+        placed_sell = sum(o["qty"] for o in self.sell_orders.values())
+        available = self.total_qty - placed_sell
+        sell_qty = self._round_qty(min(qty, available)) if available > 0 else 0.0
         if sell_qty > 0 and self._check_min_notional(sell_qty, sell_price):
             order = await _retry_api(
                 self.exchange.create_order,
@@ -416,6 +439,111 @@ async def update_market_filter(state: BotState, exchange) -> None:
         await notify_error("MarketFilter", e)
 
 
+async def recover_state(exchange) -> dict:
+    """재시작 시 이전 세션 잔존물(미체결 주문 + 비-USDT 포지션) 정리.
+
+    Clean slate 방식: 이전 그리드 상태를 복원하지 않고 전량 정리 후 스캐너가
+    재선정하도록 위임. 디스크 영속화 없이 이중 포지션 위험을 제거.
+
+    정리 대상:
+      - 모든 심볼의 미체결 주문 → cancel
+      - USDT·BNB·주요 스테이블코인 외 free 잔고 → {CUR}/USDT 시장가 매도
+      - MIN_NOTIONAL 미달(dust) 또는 USDT 페어 없는 자산 → 스킵
+
+    Returns: {"canceled": int, "liquidated": list[str], "skipped": list[str]}
+    """
+    # 0. 마켓 정보 로드 (MIN_NOTIONAL·stepSize 확인용)
+    try:
+        if not getattr(exchange, "markets", None):
+            await _retry_api(exchange.load_markets)
+    except Exception:
+        pass
+
+    markets = getattr(exchange, "markets", {}) or {}
+    result = {"canceled": 0, "liquidated": [], "skipped": []}
+
+    # 1. 미체결 주문 전부 취소
+    try:
+        open_orders = await _retry_api(exchange.fetch_open_orders)
+    except Exception as e:
+        await notify_error("Recover.fetch_open_orders", e)
+        open_orders = []
+
+    for order in open_orders:
+        try:
+            await exchange.cancel_order(order["id"], order["symbol"])
+            result["canceled"] += 1
+        except Exception:
+            continue
+
+    # 2. 잔고 조회 — 실패 시 복구 중단 (안전: 무엇을 들고 있는지 모르면 거래 금지)
+    try:
+        balance = await _retry_api(exchange.fetch_balance)
+    except Exception as e:
+        await notify_error("Recover.fetch_balance", e)
+        await send("[상태 복구] 실패 — 잔고 조회 불가. 수동 점검 필요.")
+        raise
+
+    # 3. 비-스테이블/비-BNB 자산을 USDT로 매도
+    SKIP_CURRENCIES = {"USDT", "USDC", "BUSD", "FDUSD", "DAI", "TUSD", "BNB"}
+    free_map = balance.get("free") or {}
+
+    for currency, free_amount in free_map.items():
+        if currency in SKIP_CURRENCIES:
+            continue
+        if not free_amount or free_amount <= 0:
+            continue
+
+        symbol = f"{currency}/USDT"
+        if symbol not in markets:
+            result["skipped"].append(f"{currency}={free_amount:.6f} (pair없음)")
+            continue
+
+        try:
+            ticker = await _retry_api(exchange.fetch_ticker, symbol)
+            price = ticker.get("last") or 0.0
+            if price <= 0:
+                result["skipped"].append(f"{currency}={free_amount:.6f} (가격없음)")
+                continue
+
+            min_cost = (markets[symbol].get("limits", {})
+                        .get("cost", {}).get("min", 10.0))
+            if free_amount * price < min_cost:
+                result["skipped"].append(f"{currency}={free_amount:.6f} (dust)")
+                continue
+
+            try:
+                sell_qty = float(exchange.amount_to_precision(symbol, free_amount))
+            except Exception:
+                sell_qty = free_amount
+            if sell_qty <= 0:
+                continue
+
+            order = await _retry_api(
+                exchange.create_order, symbol, "market", "sell", sell_qty,
+            )
+            fill_price = order.get("average") or price
+            result["liquidated"].append(
+                f"{currency} {sell_qty:.6f}@${fill_price:,.4f}"
+            )
+        except Exception as e:
+            await notify_error(f"Recover.sell.{currency}", e)
+
+    # 4. 결과 보고
+    lines = ["[상태 복구] 재시작 정리 완료",
+             f"취소된 주문: {result['canceled']}건"]
+    if result["liquidated"]:
+        lines.append(f"청산된 포지션: {len(result['liquidated'])}개")
+        for item in result["liquidated"]:
+            lines.append(f"  - {item}")
+    else:
+        lines.append("청산된 포지션: 없음")
+    if result["skipped"]:
+        lines.append(f"스킵: {', '.join(result['skipped'])}")
+    await send("\n".join(lines))
+    return result
+
+
 def check_loss_streak(state: BotState) -> None:
     """연속 손실 RECENT_LOSS_STREAK회 도달 시 시장 악화 판정.
     매도 체결·손절·긴급매도 직후 호출. is_market_healthy=False면 should_stop_profit이
@@ -454,6 +582,15 @@ async def run_executor(state: BotState, exchange) -> None:
     today: datetime.date = datetime.date.today()
 
     print("[Executor] 시작")
+
+    # 재시작 상태 복구 (C2) — 이전 세션 잔존 주문·포지션 정리
+    try:
+        await recover_state(exchange)
+    except Exception as e:
+        await notify_error("Executor.recover_state", e)
+        state.kill_event.set()
+        return
+
     while not state.kill_event.is_set():
         try:
             # ── 1. 킬 이벤트 재확인 ──
