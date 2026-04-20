@@ -60,6 +60,7 @@ python main.py
 
 | 날짜 | 파일 | 변경 이유 |
 |------|------|-----------|
+| 2026-04-20 | [CLAUDE.md](CLAUDE.md), [.claudeignore](.claudeignore), [skills/](skills/) | 토큰 절약 구조 개편: .claudeignore 추가, CLAUDE.md 슬림화, 자동점검·문서화·컨벤션을 skills/로 분리 |
 | 2026-04-17 | [executor.py](executor.py) | B2: `check_stop_loss()` avg_price·total_invested 0 초기화 추가 |
 | 2026-04-17 | [requirements.txt](requirements.txt) | H1: `pip freeze` 기반 requirements.txt 생성 (VPS 배포 준비) |
 | 2026-04-17 | [config.py](config.py) | A9: `SCANNER_CANDLE_LIMIT` 15→30 (Wilder's Smoothing 워밍업 확보) |

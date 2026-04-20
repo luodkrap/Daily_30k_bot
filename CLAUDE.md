@@ -1,36 +1,26 @@
 # CLAUDE.md
 
-> **목표:** 하루 3만 원 수익 — 바이낸스 무인 자동매매 봇 (Project: Daily 30K)  
-> 설계자: 도울 | 수석 개발자: Claude  
-> **현재 작업 현황 (세션 인수인계) → [WORKFLOW.md](WORKFLOW.md)**  
+> **목표:** 하루 3만 원 수익 — 바이낸스 무인 자동매매 봇 (Project: Daily 30K)
+> 설계자: 도울 | 수석 개발자: Claude
+> **현재 작업 현황 (세션 인수인계) → [WORKFLOW.md](WORKFLOW.md)**
 > 상세 설계·아키텍처·로드맵 → [PROJECT.md](PROJECT.md) | 기능 백로그 → [TODO.md](TODO.md)
 
 ## 세션 시작 절차
 
 새 대화 시작 시 → **[WORKFLOW.md](WORKFLOW.md) 먼저 읽기** → "현재 작업"이 있으면 이어서, 없으면 "다음 작업 목록" 최상위 항목 선택.
 
-## 자동 점검 규칙 (Auto Checkpoint)
+## 토큰 절약 규칙 (4)
 
-> 아래 조건 중 하나라도 충족되면, 작업 시작 전에 **자동으로 project-auditor를 실행**할 것.  
-> 점검 완료 후 WORKFLOW.md의 `마지막 점검` 날짜를 갱신할 것.
+1. **이미 읽은 파일 재확인 금지** — 같은 세션에서 동일 파일을 두 번 Read 하지 말 것. 변경 여부 확인이 필요하면 Grep으로 대상 심볼만 확인.
+2. **탐색 전 계획** — 파일 구조를 모르는 경우 Glob/Grep으로 위치 확정 후 Read. 추측으로 Read 남발 금지.
+3. **WORKFLOW.md 우선 로드** — 세션 시작 시 이 파일만으로 상태 파악. PROJECT.md/TODO.md는 필요 시에만.
+4. **스킬 온디맨드** — 자동 점검·문서화 규칙은 트리거 조건 충족 시에만 `skills/*.md`를 읽을 것. 매 세션 기본 로드 금지.
 
-**트리거 조건:**
-1. **완료 누적 3회:** WORKFLOW.md 완료 테이블에 마지막 점검 이후 3개 이상 항목이 추가됐을 때
-2. **Phase 전환 전:** Critical 항목(C1~C4)이 모두 완료되어 Phase 6(페이퍼 트레이딩)으로 넘어가기 직전
-3. **대규모 수정 후:** `executor.py` 또는 `screener.py`에서 50줄 이상 변경이 발생한 세션 직후
-4. **3주 경과:** 마지막 점검으로부터 21일 이상 지났을 때
+## 온디맨드 스킬 (필요 시에만 참조)
 
-**점검 명령:**
-```
-project-auditor 에이전트로 전체 점검해줘. 매매 전략 논리 오류, 파일 간 모순, 미해결 버그 우선순위 중심으로.
-```
-
-## 문서화 규칙 (Documentation Rules)
-
-1. **PROJECT.md 업데이트:** 로직에 중요한 변화가 생길 때마다(특히 매매 전략이나 API 호출 관련) PROJECT.md를 즉시 업데이트할 것.
-2. **TODO.md 즉시 반영:** TODO.md에 명시된 작업이 완료되면, 지체 없이 완료 표시(Check-off)를 할 것.
-3. **기록 후 실행:** 새로운 버그가 발견되거나 새로운 기능이 계획되면, 구현을 시작하기 전에 반드시 TODO.md에 먼저 추가할 것.
-4. **WORKFLOW.md 즉시 반영:** 작업 완료 즉시 WORKFLOW.md 완료 테이블에 추가하고 해당 항목을 삭제할 것. 세션 종료 전 미완성 작업은 "현재 작업" 섹션에 진행 상황을 기록할 것.
+- 자동 점검 규칙 (트리거·명령) → [skills/auto-checkpoint.md](skills/auto-checkpoint.md)
+- 문서화 규칙 (PROJECT/TODO/WORKFLOW 갱신 규칙) → [skills/documentation-rules.md](skills/documentation-rules.md)
+- 확정 아키텍처·컨벤션 (반복 질문 방지) → [skills/conventions.md](skills/conventions.md)
 
 ## 개발 환경
 
