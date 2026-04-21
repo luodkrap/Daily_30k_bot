@@ -1,0 +1,21 @@
+[Unit]
+Description=Daily 30K Bot — Binance auto-trading
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Daily_30k_bot
+EnvironmentFile=/home/ubuntu/Daily_30k_bot/.env
+ExecStart=/home/ubuntu/Daily_30k_bot/venv/bin/python main.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/home/ubuntu/Daily_30k_bot/logs/daily30k.out.log
+StandardError=append:/home/ubuntu/Daily_30k_bot/logs/daily30k.err.log
+
+# 메모리 상한 — 1GB RAM Lightsail 에서 OOM 방지
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

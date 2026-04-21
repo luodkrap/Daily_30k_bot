@@ -34,10 +34,9 @@ import persistence
 
 async def _log_trade(symbol: str, side: str, qty: float, price: float,
                      fee: float, pnl: float) -> None:
-    """체결 1건을 trades.db 에 비동기 기록. 실패해도 매매 흐름은 차단하지 않는다."""
+    """체결 1건을 DB 에 비동기 기록. 실패해도 매매 흐름은 차단하지 않는다."""
     try:
-        await asyncio.to_thread(
-            persistence.record_trade,
+        await persistence.record_trade(
             symbol, side, qty, price, fee, pnl, config.MODE,
         )
     except Exception as e:

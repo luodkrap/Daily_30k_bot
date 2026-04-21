@@ -13,12 +13,16 @@
 - **언어:** Python (데이터 처리 및 API 통신에 최적화)
 - **핵심 라이브러리:**
   - `ccxt`: 바이낸스 API 연동 및 범용 주문 처리.
-  - `pandas`, `numpy`: 호가 및 캔들 데이터 분석, 기술적 지표 계산.
+  - `pandas`, `numpy`, `pyarrow`: 백테스트 엔진 데이터 처리·parquet I/O (Phase 7 C 트랙에서 도입).
   - `python-telegram-bot`: 실시간 모니터링 및 원격 제어 모듈.
   - `aiohttp`: 비동기 HTTP 통신 (텔레그램 알림).
   - `asyncio`: 스캐너·트레이딩 엔진·텔레그램 봇 동시 실행 (단일 프로세스 동시성).
+  - `asyncpg`: Supabase Postgres 비동기 드라이버 (운영 DB 백엔드).
 - **거래소:** Binance (풍부한 유동성, 낮은 슬리피지, 강력한 API 지원).
-- **인프라:** AWS EC2, Google Cloud Compute Engine 등 클라우드 가상 서버(VPS)를 활용한 24시간 무중단 가동.
+- **인프라 (2026-04-21 확정):**
+  - **서버:** AWS Lightsail $5 플랜 (Ubuntu 22.04, 서울 리전, 1GB RAM) — EC2 대비 경량 VPS, 고정 가격·방화벽·스냅샷 기본 제공.
+  - **DB:** Supabase Postgres (Free tier 500MB) — 웹 대시보드에서 거래 내역 실시간 조회. 로컬 개발·백테스트는 SQLite 로 듀얼 백엔드 (`DB_BACKEND` 환경변수).
+  - **프로세스 관리:** systemd (`Restart=on-failure`).
 
 ---
 
@@ -79,7 +83,7 @@
 
 ## 5. 프로젝트 파일 구조 (File Structure)
 
-현재 구현된 소스 파일 목록 (루트 플랫 구조, Phase 5 기준):
+현재 구현된 소스 파일 목록 (루트 플랫 구조, Phase 7 기준 — persistence.py + deploy/ 포함):
 
 | 파일 | 역할 |
 |---|---|
@@ -88,9 +92,24 @@
 | `notifier.py` | 텔레그램 비동기 알림 모듈 (`aiohttp`) |
 | `screener.py` | 스캐너 엔진 — 5단계 필터링 + 점수 정렬 + 텔레그램 보고 |
 | `executor.py` | 트레이딩 엔진 — `GridEngine` + `run_executor` 오케스트레이터 + 200MA 필터 |
-| `persistence.py` | SQLite(`trades.db`) 체결 로그 — live/testnet 거래를 mode 컬럼으로 분리 보관 |
+| `persistence.py` | 듀얼 백엔드 영속화 (`SqliteBackend` / `SupabaseBackend`, async 인터페이스). 테이블 3종: `trades` (체결 로그, live/testnet mode 컬럼), `equity_snapshots` (1시간 주기 잔고), `bot_events` (킬·재시작·에러) |
 | `main.py` | `asyncio.gather()`로 스캐너·트레이딩·텔레그램 봇 동시 실행 + MODE별 `set_sandbox_mode` 분기 |
 | `test.py` | 단위·통합 테스트 |
+
+**Phase 7 추가 예정 (2026-04-21 확정 플랜):**
+
+| 경로 | 역할 |
+|---|---|
+| `exchanges/base.py` | `BaseExchange` 프로토콜 (create_order / fetch_ticker / fetch_balance) |
+| `exchanges/ccxt_exchange.py` | live·testnet 용 ccxt 래퍼 |
+| `exchanges/backtest_exchange.py` | parquet 캔들 재생 시뮬레이터 |
+| `backtest/data.py` | 과거 1분봉 다운로드 (`ccxt.fetch_ohlcv` → parquet) |
+| `backtest/simulator.py` | 시간 이동하며 GridEngine 에 tick 주입 |
+| `backtest/runner.py` | 파라미터 스윕 (SEED, ATR 배수, 그리드 간격) |
+| `backtest/results.py` | 손익 곡선 · MDD · 샤프비 · 승률 리포트 |
+| `deploy/schema.sql` | Supabase Postgres 스키마 (3테이블, IF NOT EXISTS 멱등) — 프로젝트 생성 후 SQL Editor 에 1회 적용 |
+| `deploy/daily30k.service` | systemd unit (자동 재시작, MemoryMax=512M Lightsail OOM 방지) |
+| `deploy/setup.sh`, `update.sh` | Lightsail 프로비저닝 / 배포 업데이트 스크립트 |
 
 ---
 
@@ -105,8 +124,8 @@
 | Phase 3 | 스캐너 엔진 (거래량·ATR·펌프앤덤프 필터, 점수 정렬) | **완료** |
 | Phase 4 | 트레이딩 엔진 (그리드 매매, 동적 코인 스위칭) | **완료** |
 | Phase 5 | 리스크 관리 (손절매, 1% Rule, 200MA 필터, 킬 스위치) | **완료** |
-| Phase 6 | 검증 (백테스트 1~3년, 페이퍼 트레이딩) | **진행 중** (페이퍼 인프라 구축 완료 — MODE=testnet, `trades.db`. 실연결 검증 남음) |
-| Phase 7 | 배포 (VPS, systemd 자동 재시작) | 미착수 |
+| Phase 6 | 검증 (백테스트 1~3년, 페이퍼 트레이딩) | **진행 중** (페이퍼 인프라 완료. 실연결은 A 트랙 완료 후 B 트랙. 백테스트 엔진은 C 트랙으로 2026-04-21 플랜 승인) |
+| Phase 7 | 배포 (AWS Lightsail + Supabase + systemd) | **코드 완료 2026-04-21 → 감사 후 보완 중 2026-04-22** (A 트랙 코드 완료. 2026-04-22 project-auditor 3/3 감사에서 N1~N14 도출 — C1 전 선결 Top 3 = N3+N4 · N1 · N8. 상세 → [TODO.md](TODO.md) / [WORKFLOW.md](WORKFLOW.md)) |
 
 - **백테스트:** 과거 1~3년 치 데이터 기반 시뮬레이션, 최대 낙폭(MDD) 및 기대 수익률($E$) 검증.
 - **페이퍼 트레이딩:** 실시간 바이낸스 데이터 연결, 가상 자금으로 로그만 기록. 통신 지연(Latency) 및 코드 버그 체크.
@@ -133,6 +152,12 @@
 - **현재 구현 (Phase 6 기준):**
   - **SQLite** (`trades.db`): 체결 이력 영구 보관 — `persistence.py` 모듈. 스키마: `(id, ts, symbol, side, qty, price, fee, pnl, mode)`. `mode` 컬럼으로 live/testnet 거래 분리. **로그 전용** (아래 '복구 방식' 참조).
   - **재시작 시 복구 방식:** 현재는 `executor.recover_state()` 가 '전량정리' 방식으로 동작 — 미체결 주문 전부 취소 + 비-USDT/BNB/스테이블 잔고 시장가 매도. DB 로드 기반 포지션 재개는 현 단계 스코프 외.
+- **Phase 7 확장 계획 (2026-04-21 확정, A 트랙):**
+  - **Supabase Postgres 듀얼 백엔드:** `persistence.py` 를 `asyncpg` 로 리팩터 + `DB_BACKEND=supabase|sqlite` 환경변수 분기. 운영은 Supabase, 로컬 개발·백테스트는 SQLite. ✅ 코드 구현 완료 (2026-04-21).
+  - **`equity_snapshots` 테이블 (1시간 주기):** 잔고·누적 수익률 스냅샷. ⚠ 테이블·insert 헬퍼 구현됐으나 **호출부 미구현** — N3 에서 보완 예정.
+  - **`bot_events` 테이블:** 킬스위치·에러·재시작 로그. ⚠ 테이블·insert 헬퍼 구현됐으나 **호출부 미구현** — N4 에서 보완 예정.
+  - **`SupabaseBackend` 단일 장애점:** `init()` 실패 시 봇 기동 불가 — N1 에서 SQLite fallback 도입 예정. 감사 2026-04-22.
+  - **원격 조회:** Supabase 웹 대시보드에서 SQL 편집기로 실시간 체결 이력 확인.
 - **후속 확장 (미구현):**
   - CSV 요약 (`recent_trades.csv`): 최근 100건 경량 기록, 파라미터 자동 조정 피드백용.
   - DB 기반 포지션 재개: 전량정리 대신 이전 그리드 상태를 이어받아 재시작하는 모드.
@@ -162,6 +187,8 @@
 ### 8.5. 인프라 안정성 확보 (Infrastructure - VPS)
 
 - **문제 상황:** 로컬 PC 이용 시 전원 관리, 네트워크 불안정성 등으로 인해 24시간 무중단 가동이 불가능함.
-- **해결 방식:**
-  - AWS EC2(프리티어 권장), Google Cloud 또는 DigitalOcean 등의 VPS(가상 전용 서버) 활용.
-  - Linux(Ubuntu) 환경에서 봇을 서비스 형태로 등록하여 프로세스가 죽더라도 운영체제 차원에서 자동으로 재시작하도록 구성.
+- **해결 방식 (2026-04-21 확정):**
+  - **AWS Lightsail $5 플랜** (Ubuntu 22.04, 서울 리전 `ap-northeast-2`, 1GB RAM / 2 vCPU / 40GB SSD / 2TB 전송). EC2 대비 고정 가격·방화벽·스냅샷 내장으로 관리 부담 최소.
+  - **systemd 서비스** (`daily30k.service`) 로 등록, `Restart=on-failure` + `RestartSec=10` 로 프로세스 크래시 시 자동 재시작.
+  - **배포 스크립트** (`deploy/setup.sh`, `update.sh`) 로 초기 프로비저닝과 `git pull → systemctl restart` 업데이트를 일관화.
+  - **헬스 체크**: 텔레그램 부팅 메시지 + 1시간 주기 `notify_status`, Supabase `bot_events` 테이블에 restart 이벤트 기록.

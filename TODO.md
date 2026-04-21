@@ -1,5 +1,32 @@
 # TODO — Daily 30K Bot
 
+> **🗓️ 2026-04-22 로드맵 플랜:** `~/.claude/plans/streamed-launching-cascade.md`
+> **상세 진행 방식:** [WORKFLOW.md](WORKFLOW.md)
+
+---
+
+## 👤 사용자 액션 남은 것 (외부 서비스 셋업)
+
+> Claude 가 대행 불가한 작업. Claude 의 N 트랙 작업과 **병행 가능**.
+
+### 🟢 지금 즉시 병행 가능
+
+- [ ] **A1b** (~15분): https://supabase.com 프로젝트 생성 → SQL Editor 에 [deploy/schema.sql](deploy/schema.sql) 붙여넣기 실행 → Settings → Database → Connection pooling(6543) URI 복사 → `.env` `SUPABASE_DB_URL` 기입
+- [ ] **A4** (~30분): AWS Lightsail 인스턴스 생성 (서울, $5 플랜, Ubuntu 22.04) → SSH 접속 → `bash deploy/setup.sh` 실행 → `.env` 에 Supabase URI·바이낸스 키 입력 → `sudo systemctl start daily30k`
+
+> 💡 **권장 순서:** 🤖 N1(SQLite fallback) 완료 후 → 👤 A1b 진행. Supabase 설정 실수 있어도 봇이 SQLite 로 기동됨.
+
+### 🟡 A1b + A4 완료 후
+
+- [ ] **B1**: https://testnet.binance.vision 가입 → HMAC API 키 발급 → 서버 `.env` 에 `MODE=testnet` + `BINANCE_TESTNET_API_KEY` + `BINANCE_TESTNET_SECRET_KEY` 기재
+- [ ] **B2**: `sudo systemctl restart daily30k` → 텔레그램 부팅 메시지 `[MODE=TESTNET]` 확인 + Supabase 대시보드 `trades` 테이블 행 증가 검증
+
+### 🔴 1~2주 페이퍼 누적 후
+
+- [ ] **B3**: 1주일 누적 손익 리포트 리뷰 → `MODE=live` 전환 여부 판단 → 실거래 바이낸스 HMAC 키 발급 (IP 화이트리스트 · 출금권한 OFF) → `.env` `MODE=live` + `BINANCE_API_KEY`/`BINANCE_SECRET_KEY` 기재 → `sudo systemctl restart daily30k`
+
+---
+
 ## 완료 (Done)
 
 - [x] 프로젝트 설계 문서 (PROJECT.md)
@@ -10,7 +37,7 @@
 
 ## 진행 중 (In Progress)
 
-없음
+없음 (🤖 다음 진입: N3+N4)
 
 ## 남은 작업 (Backlog)
 
@@ -57,7 +84,7 @@
 - [x] C3: `check_stop_loss()` + `emergency_sell()` 매수 수수료 누락 → 킬 스위치 지연
 - [x] C4: 리그리딩 트리거 `not engine.buy_orders` 조건 누락 → 이중 포지션 위험
 - [x] C1: `setup_grid()` 시장가 매수 → 지정가로 교체 (CLAUDE.md 원칙 위반)
-- [x] C2: 재시작 시 포지션·주문 상태 복구 로직 없음 → 이중 포지션 위험 (실전 투입 블로커) (2026-04-21 `recover_state()` 전량정리 방식 — 미체결 주문 취소 + 비-USDT 포지션 시장가 매도, dust 스킵)
+- [x] C2: 재시작 시 포지션·주문 상태 복구 로직 없음 → 이중 포지션 위험 (실전 투입 블로커) (2026-04-21 `recover_state()` 전량정리 방식 — 미체결 주문 취소 + 비-USDT 포지션 시장가 매도, dust 스킵) **⚠ 2026-04-22 감사: 청산 체결이 `_log_trade()` 에 기록 안 됨 → N5 에서 보완**
 
 **높은 우선순위 (High) — 실전 투입 전 해결**
 
@@ -81,12 +108,51 @@
 - [x] B5: `stability_score` 임계값 0.05 실효성 없음 → 가중치 20% 사실상 낭비 (2026-04-21 후보군 CV min-max 정규화로 전환 — ATR·volume 점수와 동일 방식)
 - [ ] B7: 캔들 수집 실패 무음 처리 → API 오류 다발 시 후보 코인 집단 탈락 감지 불가
 
+**🤖 감사 결과 추가 (2026-04-22) — Phase 7 보완 / C1 리팩터 전 선결**
+
+> 감사 보고서: 2026-04-22 project-auditor 3/3. A2/C2 가 [x]로 체크됐으나 핵심 기능 누락 발견. C1(Exchange 추상화) 전 선결 Top 3 → **N3+N4 → N1 → N8**. 로드맵 플랜 → `~/.claude/plans/streamed-launching-cascade.md`
+
+**치명적 (Critical) — C1 전 필수**
+
+- [ ] 🤖 N1 (2순위): `SupabaseBackend.init()` 실패 시 봇 기동 불가 → [main.py:161](main.py#L161) `try-except` + SQLite fallback degraded 부팅
+- [ ] 🤖 N2: `persistence.py` 모듈 레벨 공개 함수(`record_equity_snapshot`, `record_event`) try-except 미적용 → 설계 원칙 "기록 실패가 매매 흐름을 차단하지 않음" 모듈 자체 보장
+
+**높은 우선순위 (High)**
+
+- [ ] 🤖 N3 (1순위): `record_equity_snapshot()` 호출부 없음 → A2 완료 실체 누락. `update_krw_rate` 30분 타이머에 편승하여 주기 호출
+- [ ] 🤖 N4 (1순위): `record_event()` 호출부 없음 → 킬 스위치 발동 · `recover_state` 완료 · `_supervise` 재시작 · BTC 200MA 상태 변화 지점에 삽입
+- [ ] 🤖 N5: `executor.py:536-550` `recover_state()` 청산이 `_log_trade()` 미호출 → 재시작 청산 손익 DB 누락
+- [ ] 🤖 N6: CLAUDE.md "모든 주문: 지정가 우선" 원칙과 손절·긴급매도·recover 청산의 시장가 사용 충돌 → 예외 조항 명시
+- [ ] 🤖 N7: `SupabaseBackend` 관련 테스트 전무 → `MockAsyncpgPool`로 init 실패 / write 실패 / timeout / fallback 동작 4건
+
+**중간 (Medium)**
+
+- [ ] 🤖 N8 (3순위): `python test.py` 기본 실행이 bugfix+Phase 6 suite 제외 → WORKFLOW 명령어를 `python test.py bugfix` 로 수정하거나 기본 모드 통합
+- [ ] 🤖 N9: `run_executor` `DAILY_LOSS_LIMIT` 킬 경로 테스트 없음 → 외부 kill_event 설정이 아닌 손익 누적 시나리오 테스트 추가
+- [ ] 🤖 N10: `deploy/setup.sh:31` Python 3.11 vs 로컬 3.14 불일치 → 3.12+ 격상 또는 `requirements.txt` VPS 버전 재생성
+- [x] N11: [PROJECT.md:86](PROJECT.md#L86) 파일 구조 표 헤더 "Phase 5 기준" → "Phase 7 기준" (2026-04-22 문서 수정)
+
+**낮음 (Low)**
+
+- [ ] 🤖 N12: `deploy/daily30k.service` 로그 rotate 미설정 → `/etc/logrotate.d/daily30k` 추가 또는 journald 전환
+- [ ] 🤖 N13: `executor.py:282-299` `monitor_orders` 단일 주문 실패가 사이클 중단 → 체결 핸들러 개별 try-except
+- [ ] 🤖 N14: `main.py:125-141` `_supervise` `max_restarts` 초과 시 `kill_event.set()` 호출 검증 테스트 없음
+
 ### Phase 6 — 검증
 
-- [ ] 백테스트 (1~3년 데이터)
-- [~] 페이퍼 트레이딩 — 인프라 완료 (2026-04-21 MODE=live/testnet 분기 + testnet 키 분리 + `set_sandbox_mode` + SQLite `trades.db` 체결 로그). 실연결 검증(testnet 키 발급·트래픽 실행·결과 확인) 남음.
+- [~] 페이퍼 트레이딩 — 인프라 완료 (2026-04-21 MODE=live/testnet 분기 + testnet 키 분리 + `set_sandbox_mode` + SQLite `trades.db` 체결 로그). 실연결 검증은 A 트랙 완료 후 B 트랙으로 진행.
+- [ ] 🤖 백테스트 엔진 구축 (C 트랙, 2026-04-21 플랜 승인, **N 트랙 Top 3 해소 후**):
+  - [ ] 🤖 C1: Exchange 인터페이스 추상화 — `exchanges/base.py`, `ccxt_exchange.py`, `backtest_exchange.py`. GridEngine `executor.py` 리팩터
+  - [ ] 🤖 C2: `backtest/data.py` — `ccxt.fetch_ohlcv` 과거 1분봉 parquet 저장
+  - [ ] 🤖 C3: `backtest/simulator.py` + `runner.py` — 시간 이동 tick 주입 + 파라미터 스윕
+  - [ ] 🤖 C4: `backtest/results.py` — 손익곡선·MDD·샤프비·승률 리포트
 
-### Phase 7 — 배포
+### Phase 7 — 배포 (A 트랙, 2026-04-21 플랜 승인 / 코드 완료 2026-04-21)
 
-- [ ] VPS 세팅 (AWS EC2 / Ubuntu)
-- [ ] systemd 서비스 등록 (자동 재시작)
+> 사용자 액션 상세는 파일 상단 **"👤 사용자 액션 남은 것"** 섹션 참조.
+
+- [~] A1: Supabase 프로젝트 — `deploy/schema.sql` 작성 완료 (trades + equity_snapshots + bot_events, IF NOT EXISTS). **남은 사용자 액션 → 상단 A1b**
+- [x] A2: `persistence.py` asyncpg 듀얼 백엔드 — `SqliteBackend` / `SupabaseBackend` 클래스, 모듈 레벨 async 인터페이스, `config.DB_BACKEND` 싱글톤 분기. asyncpg 지연 임포트. (2026-04-21) **⚠ 2026-04-22 감사: `record_equity_snapshot`/`record_event` 호출부 미구현 → 🤖 N3/N4 에서 보완**
+- [x] A3: `config.py` `DB_BACKEND` / `SQLITE_DB_PATH` / `SUPABASE_DB_URL` 추가. `.env.example` DB 섹션 + Pooler URI 안내. `requirements.txt` `asyncpg==0.30.0`. (2026-04-21)
+- [ ] 👤 **A4**: AWS Lightsail 인스턴스 생성 (서울 리전, $5 플랜, Ubuntu 22.04) — **사용자 액션 → 상단 A4**
+- [x] A5: `deploy/daily30k.service` (systemd unit, MemoryMax=512M) + `setup.sh` (Ubuntu 22.04 초기 프로비저닝) + `update.sh` (git pull + 조건부 pip install + restart). (2026-04-21)

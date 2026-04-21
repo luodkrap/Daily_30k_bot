@@ -9,11 +9,12 @@
 
 | 항목 | 값 |
 |------|----|
-| **현재 Phase** | Phase 6 진행 중 — 페이퍼 트레이딩(Testnet) 인프라 구축 완료, 실연결 검증 단계 |
-| **마지막 점검** | 2026-04-17 (project-auditor 전체 감사) |
-| **점검 누적** | 2/3 |
-| **남은 블로커** | 없음 |
-| **테스트 상태** | 전체 통과 (2026-04-21 Phase 6 MODE/SQLite 작업 후 확인) |
+| **현재 Phase** | Phase 7 감사 후 보완 중 — A 트랙 코드 완료, 감사 후 N1~N14 개선 대기. C1(Exchange 추상화) 전 선결 Top 3 = N3+N4 → N1 → N8. A1b·A4 사용자 액션 병행 대기 |
+| **마지막 점검** | 2026-04-22 (project-auditor 전체 감사 — A 트랙 + Phase 6 + 버그픽스 누적 반영) |
+| **점검 누적** | 3/3 |
+| **남은 블로커** | N1 (SupabaseBackend init 실패 → 봇 기동 불가 · 운영 단일 장애점) |
+| **테스트 상태** | 전체 통과 (`python test.py bugfix` 기준). 단, `python test.py` 기본 실행은 Phase 3/4 suite만 — N8 참조 |
+| **로드맵 플랜** | `~/.claude/plans/streamed-launching-cascade.md` (2026-04-22 승인 — 역할 분담·타임라인) |
 
 ---
 
@@ -60,6 +61,9 @@ python main.py
 
 | 날짜 | 파일 | 변경 이유 |
 |------|------|-----------|
+| 2026-04-22 | [WORKFLOW.md](WORKFLOW.md), [TODO.md](TODO.md), [PROJECT.md](PROJECT.md) | 2026-04-22 project-auditor 3/3 감사 결과 반영: N1~N14 개선 항목 추가, Phase 7 "감사 후 보완" 상태 전환, C1 전 선결 Top 3 (N3+N4 → N1 → N8) 우선순위 기재. 플랜 파일 `~/.claude/plans/deep-jingling-frog.md` |
+| 2026-04-21 | [persistence.py](persistence.py), [config.py](config.py), [main.py](main.py), [executor.py](executor.py), [.env.example](.env.example), [requirements.txt](requirements.txt), [test.py](test.py), [deploy/schema.sql](deploy/schema.sql), [deploy/daily30k.service](deploy/daily30k.service), [deploy/setup.sh](deploy/setup.sh), [deploy/update.sh](deploy/update.sh) | A 트랙 코드 (A1 schema.sql / A2 asyncpg 듀얼 백엔드 async 인터페이스 / A3 DB_BACKEND·SUPABASE_DB_URL env + asyncpg deps / A5 systemd unit·setup·update 스크립트). equity_snapshots·bot_events 테이블 추가 |
+| 2026-04-21 | [WORKFLOW.md](WORKFLOW.md), [TODO.md](TODO.md), [PROJECT.md](PROJECT.md) | 운영 인프라 아키텍처 확정 반영: AWS Lightsail + Supabase Postgres 듀얼 백엔드 + 백테스트 엔진 (A/B/C 3트랙). 플랜 파일 `~/.claude/plans/mellow-imagining-wozniak.md` |
 | 2026-04-21 | [config.py](config.py), [main.py](main.py), [executor.py](executor.py), [persistence.py](persistence.py), [.env.example](.env.example), [.gitignore](.gitignore), [test.py](test.py) | Phase 6 페이퍼 트레이딩 인프라: MODE=live/testnet 분기 + testnet API 키 분리 로드 + `set_sandbox_mode` + SQLite `trades.db` 체결 로그 (BUY/SELL 양방향, mode 컬럼) |
 | 2026-04-21 | [screener.py](screener.py), [test.py](test.py) | B5: `_score_and_rank()` stability_score 를 후보군 CV min-max 정규화로 전환 (구 공식 `1 - cv/0.05` 는 CV>5% 코인을 전부 0점 clamp → 가중치 20% 실효성 없음) |
 | 2026-04-21 | [executor.py](executor.py), [test.py](test.py) | B3: setup_grid 마지막 레벨에 `fill_qty - placed_sum` 잔량 사용 + _handle_buy_fill 에 `total_qty - Σ기배치` 상한 적용 (stepSize 반올림 누적으로 Σsell_qty > total_qty 되던 insufficient balance 결함 방지) |
@@ -77,22 +81,100 @@ python main.py
 
 ## 다음 작업 목록 (우선순위 순)
 
-### Phase 6 실연결 검증 `다음 단계`
-인프라(MODE 분기·SQLite 로그) 구축 완료. 이제 실제 testnet API 키 발급 + 소액 실거래 검증 단계.
-- (1) https://testnet.binance.vision 가입·HMAC 키 발급 후 `.env` 에 `MODE=testnet` + `BINANCE_TESTNET_*` 기재
-- (2) `python main.py` → 텔레그램 부팅 메시지 `[MODE=TESTNET]` 확인
-- (3) 그리드 진입·손절·recover 경로를 가상 자금으로 재현 후 `trades.db` 기록 검증
-- (4) 결과 문서화 후 백테스트 단계 진입
+> **2026-04-22 감사 반영** (플랜: `~/.claude/plans/streamed-launching-cascade.md`) — Phase 7 코드 완료 후 감사에서 N1~N14 도출. **N 트랙이 C 트랙(C1)보다 선행**. A 트랙 사용자 액션은 Claude 작업과 병행 가능.
 
 ---
 
-### 백테스트 `후속`
-과거 1~3년 캔들 데이터 기반 시뮬레이션. 페이퍼 검증 완료 후 착수. [TODO.md](TODO.md) Phase 6 참조.
+### 🗓️ 권장 타임라인
+
+```
+Day 0 (오늘)
+ ├─ 🤖 N3+N4 호출부 추가 → 테스트 → 커밋
+ ├─ 🤖 N1 Supabase→SQLite fallback → 테스트 → 커밋
+ └─ 🤖 N8 테스트 기본 모드 개편 → 커밋
+
+Day 0~1 (병행)
+ ├─ 👤 A1b Supabase 프로젝트 + schema.sql 적용
+ └─ 👤 A4 Lightsail 생성 + setup.sh + systemctl start
+
+Day 1~3
+ ├─ 🤖 N2·N5·N6·N7 (High 잔여)
+ ├─ 👤 B1 testnet 키 발급 + MODE=testnet 기동
+ └─ 👤 B2 Supabase `trades` 행 증가 확인
+
+Day 3~10 (1~2주 페이퍼 방치)
+ ├─ 🤖 N9·N10·N12·N13·N14·B7 (Medium/Low 소화)
+ └─ 🤖 C 트랙 (C1~C4 백테스트 엔진) 진행 가능
+
+Day ~14
+ └─ 👤 B3 누적 손익 검토 → MODE=live 전환 판단
+```
+
+> 💡 **권장 순서:** 🤖 N1(SQLite fallback)을 먼저 끝낸 뒤 👤 A1b를 진행. Supabase 설정 실수가 있어도 봇이 SQLite로 기동됨.
 
 ---
 
-### B7 — 캔들 수집 실패 감지 `낮음 ~30분`
-무음 처리되는 API 오류 누적 시 후보 집단 탈락 감지 불가. 실패율 임계치 넘으면 알림.
+### 🤖 Claude 트랙 (N 트랙 — 감사 후 보완) `C1 리팩터 전 선결`
+
+> 감사 Top 3 선결 과제: **N3+N4 → N1 → N8**. 상세 우선순위·영향 범위 → [TODO.md](TODO.md) "감사 결과 추가 (2026-04-22)" 섹션.
+
+**🔴 Critical — 1순위**
+- [ ] **N3+N4** (30~60분, 1순위): `record_equity_snapshot()` / `record_event()` 호출부 추가 — `executor.py` `update_krw_rate` 30분 타이머 편승 + 킬 스위치·recover_state·_supervise 재시작·BTC 200MA 필터 변화 지점. A2 완료 실체 확보
+- [ ] **N1** (30분, 2순위): `SupabaseBackend.init()` 실패 시 SQLite fallback — [main.py:161](main.py#L161) try-except + degraded 부팅 텔레그램 알림. 운영 단일 장애점 해소
+- [ ] N2 (Critical, N1과 병합 가능): [persistence.py:277-307](persistence.py#L277-L307) 모듈 레벨 공개 함수 try-except 래핑 (record_equity_snapshot·record_event·record_trade)
+
+**🟠 High**
+- [ ] N5: [executor.py:536-550](executor.py#L536-L550) `recover_state()` 시장가 청산 후 `_log_trade()` 호출 추가
+- [ ] N6: [CLAUDE.md](CLAUDE.md) "모든 주문: 지정가 우선" 원칙에 "손절·긴급매도·recover 청산 시장가 허용" 예외 조항 (문서만)
+- [ ] N7: `SupabaseBackend` 테스트 4건 (`MockAsyncpgPool` — init 실패 / write 실패 / acquire timeout / fallback 동작)
+
+**🟡 Medium**
+- [ ] **N8** (5분, 3순위): [test.py:1383-1408](test.py#L1383-L1408) 기본 `unit` 모드에 bugfix+phase6 suite 포함 (또는 WORKFLOW 테스트 명령어를 `python test.py bugfix` 로 수정). C1 리팩터 안전망
+- [ ] N9: `run_executor` `DAILY_LOSS_LIMIT` 킬 경로 테스트 (외부 kill_event 설정 없이 손익 누적으로 발동)
+- [ ] N10: [deploy/setup.sh:31](deploy/setup.sh#L31) Python 3.11 → 3.12+ 격상 또는 `requirements.txt` VPS 버전 재생성 (로컬 3.14 호환성 확보)
+- [x] ~~N11: [PROJECT.md:86](PROJECT.md#L86) 헤더 "Phase 5 기준" → "Phase 7 기준"~~ ✅ 2026-04-22 문서 수정 완료
+
+**🟢 Low**
+- [ ] N12: [deploy/daily30k.service](deploy/daily30k.service) 로그 rotate — `/etc/logrotate.d/daily30k` 설정 또는 journald 전환
+- [ ] N13: [executor.py:282-299](executor.py#L282-L299) `monitor_orders` 체결 핸들러 개별 try-except (단일 주문 실패 격리)
+- [ ] N14: [main.py:125-141](main.py#L125-L141) `_supervise` `max_restarts` 초과 시 `kill_event.set()` 검증 테스트
+- [ ] B7: 캔들 수집 실패 감지 — 무음 처리되는 API 오류 누적 시 실패율 임계치 넘으면 알림 (screener.py)
+
+---
+
+### 🤖 Claude 트랙 (C 트랙 — 백테스트 엔진) `N 트랙 Top 3 후 진행`
+
+A 와 독립. 로컬 개발 환경에서 진행. **C1 전 반드시 N3+N4 → N1 → N8 해소 (감사 권고).**
+- [ ] C1: Exchange 인터페이스 추상화 — `exchanges/base.py`, `ccxt_exchange.py`, `backtest_exchange.py`. GridEngine 이 추상 인터페이스만 참조하도록 `executor.py` 리팩터 (ccxt 의존 지점 약 25개 — 감사 보고서 §3-4 참조)
+- [ ] C2: `backtest/data.py` — `ccxt.fetch_ohlcv` 로 과거 1분봉 다운 → parquet 저장
+- [ ] C3: `backtest/simulator.py` + `backtest/runner.py` — 시간 이동 tick 주입 + 파라미터 스윕
+- [ ] C4: `backtest/results.py` — 손익곡선·MDD·샤프비·승률 리포트
+
+---
+
+### 👤 사용자 트랙 (외부 서비스 셋업)
+
+#### 🟢 지금 즉시 병행 가능 (Claude 작업과 독립)
+
+**A 트랙 — 운영 인프라 (Supabase + Lightsail)** — 코드 완료 2026-04-21, 사용자 액션만 남음
+
+- [x] A1-code: `deploy/schema.sql` 작성 (trades + equity_snapshots + bot_events)
+- [x] A2: `persistence.py` asyncpg 듀얼 백엔드 (SqliteBackend / SupabaseBackend, async 인터페이스)
+- [x] A3: `config.py` DB_BACKEND·SUPABASE_DB_URL, `.env.example` 갱신, `requirements.txt` asyncpg==0.30.0
+- [x] A5: `deploy/daily30k.service`, `setup.sh`, `update.sh` 작성
+- [ ] **A1b** (사용자, ~15분): https://supabase.com 프로젝트 생성 → SQL Editor 에 `deploy/schema.sql` 붙여넣기 실행 → Settings → Database → Connection pooling(6543) URI 복사 → `.env` `SUPABASE_DB_URL` 기입
+- [ ] **A4** (사용자, ~30분): AWS Lightsail 인스턴스 생성 (서울, $5, Ubuntu 22.04) → SSH 접속 → `bash deploy/setup.sh` 실행 → `.env` 에 Supabase URI·바이낸스 키 입력 → `sudo systemctl start daily30k`
+
+#### 🟡 A 완료 후 진행
+
+**B 트랙 — 페이퍼 트레이딩 실연결**
+
+- [ ] **B1** (사용자): https://testnet.binance.vision 가입 → HMAC 키 발급 → 서버 `.env` 에 `MODE=testnet` + `BINANCE_TESTNET_API_KEY` + `BINANCE_TESTNET_SECRET_KEY` 기재
+- [ ] **B2** (사용자): `sudo systemctl restart daily30k` → 텔레그램 부팅 메시지 `[MODE=TESTNET]` 확인 · Supabase `trades` 테이블 행 증가 검증
+
+#### 🔴 1~2주 페이퍼 누적 후
+
+- [ ] **B3** (사용자): 1주일 누적 손익 리포트 리뷰 → `MODE=live` 전환 여부 판단 → 실거래 바이낸스 HMAC 키 발급 (IP 화이트리스트·출금권한 OFF) → `.env` `MODE=live` + `BINANCE_API_KEY`/`BINANCE_SECRET_KEY` 기재 → `sudo systemctl restart daily30k`
 
 ---
 
@@ -103,6 +185,11 @@ python main.py
 
 | 날짜 | ID | 내용 |
 |------|----|------|
+| 2026-04-22 | Audit 3/3 | `project-auditor` 전체 감사 — A 트랙·Phase 6·버그픽스 누적 반영. N1~N14 개선 항목 도출. C1 전 선결 Top 3 = N3+N4 → N1 → N8. 주요 발견: A2 `equity_snapshots`/`bot_events` 호출부 미구현 (N3/N4), `SupabaseBackend.init()` 실패 시 봇 기동 불가 단일 장애점 (N1), `recover_state` 청산 `_log_trade` 누락 (N5). 플랜: `~/.claude/plans/deep-jingling-frog.md` |
+| 2026-04-22 | N11 | [PROJECT.md:86](PROJECT.md#L86) 파일 구조 표 헤더 "Phase 5 기준" → "Phase 7 기준" 수정. 감사에서 발견된 문서 버전 오래됨 해소 |
+| 2026-04-21 | A2 | `persistence.py` 전면 리팩터 — `SqliteBackend` / `SupabaseBackend` 두 클래스, 모듈 레벨 함수는 `config.DB_BACKEND` 싱글톤 분기. 인터페이스를 `async` 로 전환 (호출부 `await persistence.record_trade(...)`). `equity_snapshots`·`bot_events` 테이블·insert 헬퍼 추가. `main.py` / `executor.py` 호출부 수정. asyncpg 지연 임포트로 sqlite 경로는 미설치여도 동작. 회귀 테스트 2건 재작성 + `test_persistence_equity_and_events` 신규 1건 |
+| 2026-04-21 | A3 | `config.py` `DB_BACKEND`·`SQLITE_DB_PATH`·`SUPABASE_DB_URL` 환경변수 추가. `.env.example` DB 섹션 + Supabase Pooler URI 안내 주석. `requirements.txt` `asyncpg==0.30.0` |
+| 2026-04-21 | A1-code, A5 | `deploy/schema.sql` (Supabase Postgres 스키마 3테이블, IF NOT EXISTS 멱등). `deploy/daily30k.service` (systemd unit, MemoryMax=512M Lightsail OOM 방지). `deploy/setup.sh` (Ubuntu 22.04 초기 프로비저닝). `deploy/update.sh` (git pull + 조건부 pip install + restart) |
 | 2026-04-21 | Phase6-a | Phase 6 페이퍼 트레이딩 인프라 구축 — `config.py` MODE=live/testnet 분기 + testnet 전용 API 키 env 분리 로드, `main.py` `set_sandbox_mode(True)` + sandbox URL assert + 부팅 메시지 `[MODE=...]` 표기, `persistence.py` 신규 (SQLite `trades.db`: id/ts/symbol/side/qty/price/fee/pnl/mode, `threading.Lock` + `asyncio.to_thread`), `executor.py` BUY/SELL 양방향 체결 훅 (setup_grid 초기 매수·_handle_buy_fill·_record_trade), `.env.example` testnet 키 필드 + 가입 안내, `.gitignore` sqlite journal 추가. 회귀 테스트 5건 (`test_mode_branch_live/testnet/invalid`, `test_persistence_init_and_roundtrip`, `test_record_trade_hook_called_on_sell`) |
 | 2026-04-21 | B5 | `screener.py` — `_score_and_rank()` stability_score 를 후보군 CV min-max 정규화로 전환. 구 공식 `max(0, 1 - cv/0.05)` 은 CV>5% 코인을 전부 0점 clamp → 가중치 20% 실효 없음. ATR·volume 점수와 동일한 상대 정규화 방식으로 통일. 회귀 테스트 1건 (`test_b5_stability_score_minmax_normalized`) |
 | 2026-04-21 | B3 | `executor.py` — `setup_grid()` 마지막 레벨에 `fill_qty - placed_sum` 잔량 사용. `_handle_buy_fill()` 에 `total_qty - Σ기배치` 상한 적용. stepSize 반올림 누적으로 매도 총합이 보유량 초과하던 insufficient balance 결함 제거. 회귀 테스트 2건 (`test_b3_setup_grid_sell_qty_within_holdings`, `test_b3_handle_buy_fill_caps_sell_qty`) |

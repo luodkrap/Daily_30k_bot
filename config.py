@@ -26,6 +26,15 @@ load_dotenv()
 MODE = os.getenv("MODE", "live").lower()
 assert MODE in ("live", "testnet"), f"MODE must be 'live' or 'testnet', got {MODE!r}"
 
+# ─── DB 백엔드 (Phase 7) ─────────────────────────────────
+# sqlite: 로컬 파일 trades.db. 개발·백테스트·기본값.
+# supabase: Supabase Postgres (asyncpg). 운영 서버(Lightsail)에서만 사용.
+DB_BACKEND       = os.getenv("DB_BACKEND", "sqlite").lower()
+assert DB_BACKEND in ("sqlite", "supabase"), \
+    f"DB_BACKEND must be 'sqlite' or 'supabase', got {DB_BACKEND!r}"
+SQLITE_DB_PATH   = os.getenv("SQLITE_DB_PATH", "trades.db")
+SUPABASE_DB_URL  = os.getenv("SUPABASE_DB_URL")  # postgres://...:6543/postgres?pgbouncer=true
+
 # ─── API 키 ───────────────────────────────────────────────
 if MODE == "testnet":
     BINANCE_API_KEY    = os.getenv("BINANCE_TESTNET_API_KEY")

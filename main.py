@@ -155,10 +155,10 @@ async def main() -> None:
         assert "testnet" in exchange.urls["api"]["public"], \
             "set_sandbox_mode 적용 실패 — testnet URL 미전환"
     state.exchange = exchange
-    persistence.init_db()
 
     try:
         await init_session()
+        await persistence.init_db()
         await send(f"Daily 30K Bot 시작! [MODE={MODE.upper()}]")
         # 각 컴포넌트는 supervisor로 격리 — 한 개가 죽어도 나머지는 계속 동작
         # return_exceptions=True 는 supervisor 자체가 예외를 흘릴 가능성 대비 이중 안전망

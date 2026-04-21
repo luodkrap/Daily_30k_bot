@@ -1242,43 +1242,74 @@ def _patched_env(overrides: dict):
 
 
 def test_persistence_init_and_roundtrip():
-    """init_db → record_trade → load_trades 왕복."""
+    """SqliteBackend 왕복: init → record_trade → load_trades (mode 필터)."""
     import tempfile
     import os as _os
-    import persistence
+    from persistence import SqliteBackend
 
-    with tempfile.TemporaryDirectory() as tmp:
-        db_path = _os.path.join(tmp, "trades.db")
-        persistence.init_db(path=db_path)
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = _os.path.join(tmp, "trades.db")
+            be = SqliteBackend(path=db_path)
+            await be.init()
 
-        persistence.record_trade(
-            "BTC/USDT", "BUY", 0.01, 50000.0, 0.5, -500.0, "testnet",
-            ts=1000.0, path=db_path,
-        )
-        persistence.record_trade(
-            "BTC/USDT", "SELL", 0.01, 50500.0, 0.5, 4500.0, "testnet",
-            ts=2000.0, path=db_path,
-        )
-        persistence.record_trade(
-            "ETH/USDT", "BUY", 0.5, 2000.0, 0.5, -500.0, "live",
-            ts=3000.0, path=db_path,
-        )
+            await be.record_trade("BTC/USDT", "BUY",  0.01, 50000.0, 0.5, -500.0, "testnet", ts=1000.0)
+            await be.record_trade("BTC/USDT", "SELL", 0.01, 50500.0, 0.5, 4500.0, "testnet", ts=2000.0)
+            await be.record_trade("ETH/USDT", "BUY",  0.5,  2000.0,  0.5, -500.0, "live",    ts=3000.0)
 
-        all_trades = persistence.load_trades(path=db_path)
-        assert len(all_trades) == 3
+            all_trades = await be.load_trades()
+            assert len(all_trades) == 3
 
-        testnet_only = persistence.load_trades(mode="testnet", path=db_path)
-        assert len(testnet_only) == 2
-        assert all(t["mode"] == "testnet" for t in testnet_only)
-        # DESC 정렬 확인
-        assert testnet_only[0]["ts"] > testnet_only[1]["ts"]
-        assert testnet_only[0]["side"] == "SELL"
+            testnet_only = await be.load_trades(mode="testnet")
+            assert len(testnet_only) == 2
+            assert all(t["mode"] == "testnet" for t in testnet_only)
+            # DESC 정렬 확인
+            assert testnet_only[0]["ts"] > testnet_only[1]["ts"]
+            assert testnet_only[0]["side"] == "SELL"
 
+    asyncio.run(_run())
     print("  [PASS] persistence_roundtrip: init/insert/load + mode 필터링")
 
 
+def test_persistence_equity_and_events():
+    """A2 확장: equity_snapshots / bot_events 테이블 insert+select."""
+    import tempfile
+    import os as _os
+    from persistence import SqliteBackend
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = _os.path.join(tmp, "trades.db")
+            be = SqliteBackend(path=db_path)
+            await be.init()
+
+            await be.record_equity_snapshot(
+                mode="testnet", equity_usdt=1000.0, cash_usdt=700.0,
+                position_value_usdt=300.0, realized_pnl=5.0, unrealized_pnl=-2.0,
+                ts=1000.0,
+            )
+            await be.record_event(
+                mode="testnet", event_type="STARTUP", severity="INFO",
+                message="bot booted", context={"pid": 123}, ts=1001.0,
+            )
+
+            # sqlite 직접 검증 (스키마 존재 + row 삽입)
+            import sqlite3
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                eq_rows = conn.execute("SELECT * FROM equity_snapshots").fetchall()
+                ev_rows = conn.execute("SELECT * FROM bot_events").fetchall()
+            assert len(eq_rows) == 1 and eq_rows[0]["equity_usdt"] == 1000.0
+            assert len(ev_rows) == 1
+            assert ev_rows[0]["event_type"] == "STARTUP"
+            assert '"pid": 123' in ev_rows[0]["context"]
+
+    asyncio.run(_run())
+    print("  [PASS] persistence_equity_and_events: 신규 테이블 왕복")
+
+
 def test_record_trade_hook_called_on_sell():
-    """매도 체결 시 persistence.record_trade 가 호출되는지 (SELL + mode 전달)."""
+    """매도 체결 시 persistence.record_trade(async) 가 호출되는지 (SELL + mode 전달)."""
     from executor import GridEngine
     from shared_state import BotState
     import persistence
@@ -1286,7 +1317,7 @@ def test_record_trade_hook_called_on_sell():
     captured: list[tuple] = []
     orig = persistence.record_trade
 
-    def fake(symbol, side, qty, price, fee, pnl, mode, ts=None, path=None):
+    async def fake(symbol, side, qty, price, fee, pnl, mode, ts=None):
         captured.append((symbol, side, qty, price, mode))
 
     persistence.record_trade = fake
@@ -1420,6 +1451,7 @@ if __name__ == "__main__":
         test_mode_branch_testnet()
         test_mode_branch_invalid()
         test_persistence_init_and_roundtrip()
+        test_persistence_equity_and_events()
         test_record_trade_hook_called_on_sell()
         print("Phase 6 단위 테스트 통과!")
 
