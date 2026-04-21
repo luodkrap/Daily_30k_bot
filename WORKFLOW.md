@@ -9,11 +9,11 @@
 
 | 항목 | 값 |
 |------|----|
-| **현재 Phase** | Phase 5 완료 → Phase 6 (페이퍼 트레이딩) 진입 가능 |
+| **현재 Phase** | Phase 6 진행 중 — 페이퍼 트레이딩(Testnet) 인프라 구축 완료, 실연결 검증 단계 |
 | **마지막 점검** | 2026-04-17 (project-auditor 전체 감사) |
 | **점검 누적** | 2/3 |
-| **남은 블로커** | 없음 — C2(상태 복구) 해결됨 |
-| **테스트 상태** | 전체 통과 (2026-04-21 B5 작업 후 확인) |
+| **남은 블로커** | 없음 |
+| **테스트 상태** | 전체 통과 (2026-04-21 Phase 6 MODE/SQLite 작업 후 확인) |
 
 ---
 
@@ -60,6 +60,7 @@ python main.py
 
 | 날짜 | 파일 | 변경 이유 |
 |------|------|-----------|
+| 2026-04-21 | [config.py](config.py), [main.py](main.py), [executor.py](executor.py), [persistence.py](persistence.py), [.env.example](.env.example), [.gitignore](.gitignore), [test.py](test.py) | Phase 6 페이퍼 트레이딩 인프라: MODE=live/testnet 분기 + testnet API 키 분리 로드 + `set_sandbox_mode` + SQLite `trades.db` 체결 로그 (BUY/SELL 양방향, mode 컬럼) |
 | 2026-04-21 | [screener.py](screener.py), [test.py](test.py) | B5: `_score_and_rank()` stability_score 를 후보군 CV min-max 정규화로 전환 (구 공식 `1 - cv/0.05` 는 CV>5% 코인을 전부 0점 clamp → 가중치 20% 실효성 없음) |
 | 2026-04-21 | [executor.py](executor.py), [test.py](test.py) | B3: setup_grid 마지막 레벨에 `fill_qty - placed_sum` 잔량 사용 + _handle_buy_fill 에 `total_qty - Σ기배치` 상한 적용 (stepSize 반올림 누적으로 Σsell_qty > total_qty 되던 insufficient balance 결함 방지) |
 | 2026-04-21 | [executor.py](executor.py), [test.py](test.py) | C2: `recover_state()` 추가 — 재시작 시 미체결 주문 취소 + 비-USDT 포지션 청산 (Phase 6 블로커 해소) |
@@ -76,8 +77,17 @@ python main.py
 
 ## 다음 작업 목록 (우선순위 순)
 
-### Phase 6 — 페이퍼 트레이딩 `다음 단계`
-모든 치명적 블로커 해소 완료. 소액 시드(예: 50만원)로 실전 투입 준비. [TODO.md](TODO.md) 참조.
+### Phase 6 실연결 검증 `다음 단계`
+인프라(MODE 분기·SQLite 로그) 구축 완료. 이제 실제 testnet API 키 발급 + 소액 실거래 검증 단계.
+- (1) https://testnet.binance.vision 가입·HMAC 키 발급 후 `.env` 에 `MODE=testnet` + `BINANCE_TESTNET_*` 기재
+- (2) `python main.py` → 텔레그램 부팅 메시지 `[MODE=TESTNET]` 확인
+- (3) 그리드 진입·손절·recover 경로를 가상 자금으로 재현 후 `trades.db` 기록 검증
+- (4) 결과 문서화 후 백테스트 단계 진입
+
+---
+
+### 백테스트 `후속`
+과거 1~3년 캔들 데이터 기반 시뮬레이션. 페이퍼 검증 완료 후 착수. [TODO.md](TODO.md) Phase 6 참조.
 
 ---
 
@@ -93,6 +103,7 @@ python main.py
 
 | 날짜 | ID | 내용 |
 |------|----|------|
+| 2026-04-21 | Phase6-a | Phase 6 페이퍼 트레이딩 인프라 구축 — `config.py` MODE=live/testnet 분기 + testnet 전용 API 키 env 분리 로드, `main.py` `set_sandbox_mode(True)` + sandbox URL assert + 부팅 메시지 `[MODE=...]` 표기, `persistence.py` 신규 (SQLite `trades.db`: id/ts/symbol/side/qty/price/fee/pnl/mode, `threading.Lock` + `asyncio.to_thread`), `executor.py` BUY/SELL 양방향 체결 훅 (setup_grid 초기 매수·_handle_buy_fill·_record_trade), `.env.example` testnet 키 필드 + 가입 안내, `.gitignore` sqlite journal 추가. 회귀 테스트 5건 (`test_mode_branch_live/testnet/invalid`, `test_persistence_init_and_roundtrip`, `test_record_trade_hook_called_on_sell`) |
 | 2026-04-21 | B5 | `screener.py` — `_score_and_rank()` stability_score 를 후보군 CV min-max 정규화로 전환. 구 공식 `max(0, 1 - cv/0.05)` 은 CV>5% 코인을 전부 0점 clamp → 가중치 20% 실효 없음. ATR·volume 점수와 동일한 상대 정규화 방식으로 통일. 회귀 테스트 1건 (`test_b5_stability_score_minmax_normalized`) |
 | 2026-04-21 | B3 | `executor.py` — `setup_grid()` 마지막 레벨에 `fill_qty - placed_sum` 잔량 사용. `_handle_buy_fill()` 에 `total_qty - Σ기배치` 상한 적용. stepSize 반올림 누적으로 매도 총합이 보유량 초과하던 insufficient balance 결함 제거. 회귀 테스트 2건 (`test_b3_setup_grid_sell_qty_within_holdings`, `test_b3_handle_buy_fill_caps_sell_qty`) |
 | 2026-04-21 | C2 | `executor.py` — `recover_state()` 추가. 재시작 시 전 심볼 미체결 주문 취소 + 비-USDT/BNB/스테이블 잔고 시장가 매도 (MIN_NOTIONAL 미달 dust 스킵). `run_executor` 메인 루프 진입 전 1회 실행. 회귀 테스트 4건 (`MockExchangeRecovery` subclass) |

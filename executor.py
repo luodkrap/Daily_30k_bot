@@ -29,6 +29,19 @@ from config import (
 # KRW_RATE, SEED, DAILY_LOSS_LIMIT 은 런타임 변경 반영을 위해 config.X 로 직접 참조
 from shared_state import BotState
 from notifier import send, notify_error, notify_trade, notify_daily_stop, notify_kill_switch
+import persistence
+
+
+async def _log_trade(symbol: str, side: str, qty: float, price: float,
+                     fee: float, pnl: float) -> None:
+    """체결 1건을 trades.db 에 비동기 기록. 실패해도 매매 흐름은 차단하지 않는다."""
+    try:
+        await asyncio.to_thread(
+            persistence.record_trade,
+            symbol, side, qty, price, fee, pnl, config.MODE,
+        )
+    except Exception as e:
+        await notify_error("persistence", e)
 
 
 async def _retry_api(fn, *args, max_retries=3, **kwargs):
@@ -95,10 +108,11 @@ class GridEngine:
         ticker = await _retry_api(self.exchange.fetch_ticker, self.symbol)
         return ticker["last"]
 
-    def _record_trade(self, sell_price: float, qty: float) -> float:
-        """매도 PnL 기록 + 승/패 카운터 갱신. 반환: net_krw."""
+    async def _record_trade(self, sell_price: float, qty: float) -> float:
+        """매도 PnL 기록 + 승/패 카운터 갱신 + trades.db 로그. 반환: net_krw."""
+        sell_fee_usdt = self._calc_fee(sell_price, qty)
         gross_usdt = (sell_price - self.avg_price) * qty
-        net_usdt = gross_usdt - self._calc_fee(sell_price, qty)
+        net_usdt = gross_usdt - sell_fee_usdt
         net_krw = net_usdt * config.KRW_RATE
 
         self.state.daily_pnl += net_krw
@@ -110,6 +124,8 @@ class GridEngine:
             self.state.consecutive_losses += 1
             check_loss_streak(self.state)
 
+        await _log_trade(self.symbol, "SELL", qty, sell_price,
+                         sell_fee_usdt, net_krw)
         return net_krw
 
     # ── 지정가 초기 매수 (미체결 시 재시도) ────────────
@@ -215,8 +231,11 @@ class GridEngine:
         self.total_invested = fill_qty * fill_price
 
         # 초기 지정가 매수 수수료 즉시 PnL 반영 (양방향 수수료 일관성)
-        buy_fee_krw = self._calc_fee(fill_price, fill_qty) * config.KRW_RATE
+        buy_fee_usdt = self._calc_fee(fill_price, fill_qty)
+        buy_fee_krw = buy_fee_usdt * config.KRW_RATE
         self.state.daily_pnl -= buy_fee_krw
+        await _log_trade(self.symbol, "BUY", fill_qty, fill_price,
+                         buy_fee_usdt, -buy_fee_krw)
 
         # 4. 매도 그리드 배치 (보유 물량 5등분, stepSize 반올림)
         # 마지막 레벨은 fill_qty - 기배치합계 잔량 사용 → Σsell_qty ≤ total_qty 보장
@@ -292,8 +311,11 @@ class GridEngine:
         self.avg_price = (old_cost + price * qty) / self.total_qty if self.total_qty > 0 else 0
 
         # 매수 수수료 즉시 PnL 반영 (매도 시점에는 매도 수수료만 차감하기 위함)
-        buy_fee_krw = self._calc_fee(price, qty) * config.KRW_RATE
+        buy_fee_usdt = self._calc_fee(price, qty)
+        buy_fee_krw = buy_fee_usdt * config.KRW_RATE
         self.state.daily_pnl -= buy_fee_krw
+        await _log_trade(self.symbol, "BUY", qty, price,
+                         buy_fee_usdt, -buy_fee_krw)
 
         # 위에 매도 주문 (stepSize 반올림, 보유량 초과 방지 상한 적용)
         sell_price = price * (1 + GRID_SPACING)
@@ -318,7 +340,7 @@ class GridEngine:
         self.total_qty -= qty
 
         # 수익 계산 (KRW). 매수 수수료는 _handle_buy_fill / setup_grid에서 이미 차감됨.
-        net_krw = self._record_trade(sell_price, qty)
+        net_krw = await self._record_trade(sell_price, qty)
         await notify_trade(self.symbol, "SELL", sell_price, net_krw)
 
         # 아래에 매수 재배치 (stepSize 반올림)
@@ -347,7 +369,7 @@ class GridEngine:
             self.symbol, "market", "sell", self.total_qty,
         )
         # 손실 기록 (매수 수수료는 매수 체결 시점에 이미 차감됨 → 매도 수수료만 반영)
-        loss_krw = self._record_trade(current_price, self.total_qty)
+        loss_krw = await self._record_trade(current_price, self.total_qty)
 
         await self.cancel_all()
         self.total_qty = 0.0
@@ -371,7 +393,7 @@ class GridEngine:
                 self.symbol, "market", "sell", self.total_qty,
             )
             fill_price = order.get("average") or current_price
-            net_krw = self._record_trade(fill_price, self.total_qty)
+            net_krw = await self._record_trade(fill_price, self.total_qty)
             await send(
                 f"[긴급 매도] {reason} — {self.symbol} @ ${fill_price:,.2f}\n"
                 f"손익: {net_krw:,.0f}원"
@@ -408,7 +430,7 @@ class GridEngine:
                 self.exchange.create_order,
                 self.symbol, "market", "sell", self.total_qty,
             )
-            self._record_trade(current_price, self.total_qty)
+            await self._record_trade(current_price, self.total_qty)
 
         await self.cancel_all()
         self.total_qty = 0.0

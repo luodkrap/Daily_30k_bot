@@ -18,4 +18,7 @@ __pycache__/
 *.log
 *.csv
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 .claude/worktrees/

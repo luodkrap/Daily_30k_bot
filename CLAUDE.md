@@ -40,12 +40,13 @@ pip install <package>      # 패키지 설치
 ## 프로젝트 파일 구조
 
 ```
-config.py        — .env 로드, SEED 기반 수치 자동 계산 (모든 모듈이 import)
+config.py        — .env 로드, MODE(live/testnet) 분기, SEED 기반 수치 자동 계산
 shared_state.py  — BotState dataclass (킬 이벤트, 손익, 시장 상태 공유)
 notifier.py      — 텔레그램 비동기 알림 모듈
 screener.py      — 스캐너 엔진 (유동성·변동성·펌프앤덤프 필터 + 점수 정렬)
 executor.py      — 트레이딩 엔진 (GridEngine + run_executor + 200MA 필터)
-main.py          — asyncio.gather()로 3개 컴포넌트 동시 실행
+persistence.py   — SQLite trades.db 체결 로그 (live/testnet mode 컬럼 분리)
+main.py          — asyncio.gather()로 3개 컴포넌트 동시 실행 + set_sandbox_mode 분기
 test.py          — 단위·통합 테스트
 ```
 
@@ -55,3 +56,4 @@ test.py          — 단위·통합 테스트
 - `ccxt`: `enableRateLimit=True` 필수
 - 모든 주문: 지정가(Limit Order) 우선
 - 모든 API 호출: `try-except` 적용, 오류 시 텔레그램 즉시 보고
+- **MODE 분리 (Phase 6~):** `MODE=live` 는 `BINANCE_API_KEY`, `MODE=testnet` 은 `BINANCE_TESTNET_API_KEY` — 실거래 키와 testnet 키를 **같은 env var 에 섞지 말 것.** 부팅 텔레그램 메시지의 `[MODE=...]` 로 교차 확인 필수.

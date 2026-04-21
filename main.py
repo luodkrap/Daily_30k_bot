@@ -23,7 +23,8 @@ main.py
 """
 import asyncio
 import ccxt.async_support as ccxt_async
-from config import BINANCE_API_KEY, BINANCE_SECRET_KEY
+from config import BINANCE_API_KEY, BINANCE_SECRET_KEY, MODE
+import persistence
 from shared_state import BotState
 from screener import run_screener
 from executor import run_executor
@@ -148,11 +149,17 @@ async def main() -> None:
         "secret": BINANCE_SECRET_KEY,
         "enableRateLimit": True,
     })
+    if MODE == "testnet":
+        exchange.set_sandbox_mode(True)
+        # sandbox 적용 실패 시 실거래로 주문 나가는 참사 방지
+        assert "testnet" in exchange.urls["api"]["public"], \
+            "set_sandbox_mode 적용 실패 — testnet URL 미전환"
     state.exchange = exchange
+    persistence.init_db()
 
     try:
         await init_session()
-        await send("Daily 30K Bot 시작!")
+        await send(f"Daily 30K Bot 시작! [MODE={MODE.upper()}]")
         # 각 컴포넌트는 supervisor로 격리 — 한 개가 죽어도 나머지는 계속 동작
         # return_exceptions=True 는 supervisor 자체가 예외를 흘릴 가능성 대비 이중 안전망
         await asyncio.gather(

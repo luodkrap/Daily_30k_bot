@@ -1166,6 +1166,154 @@ def test_b5_stability_score_minmax_normalized():
 
 
 # ─────────────────────────────────────────────────────────
+# Phase 6: MODE 분기 + SQLite 영속화
+# ─────────────────────────────────────────────────────────
+
+def test_mode_branch_live():
+    """MODE=live 시 실거래 API 키 env 를 읽는지."""
+    import importlib
+    import sys
+    with _patched_env({
+        "MODE": "live",
+        "BINANCE_API_KEY": "LIVE_KEY",
+        "BINANCE_SECRET_KEY": "LIVE_SECRET",
+        "BINANCE_TESTNET_API_KEY": "TESTNET_KEY",
+        "BINANCE_TESTNET_SECRET_KEY": "TESTNET_SECRET",
+    }):
+        sys.modules.pop("config", None)
+        cfg = importlib.import_module("config")
+        assert cfg.MODE == "live"
+        assert cfg.BINANCE_API_KEY == "LIVE_KEY"
+        assert cfg.BINANCE_SECRET_KEY == "LIVE_SECRET"
+    print("  [PASS] mode_branch_live: 실거래 키 로드")
+
+
+def test_mode_branch_testnet():
+    """MODE=testnet 시 testnet API 키 env 를 읽는지 (실거래 키와 분리)."""
+    import importlib
+    import sys
+    with _patched_env({
+        "MODE": "testnet",
+        "BINANCE_API_KEY": "LIVE_KEY",
+        "BINANCE_SECRET_KEY": "LIVE_SECRET",
+        "BINANCE_TESTNET_API_KEY": "TESTNET_KEY",
+        "BINANCE_TESTNET_SECRET_KEY": "TESTNET_SECRET",
+    }):
+        sys.modules.pop("config", None)
+        cfg = importlib.import_module("config")
+        assert cfg.MODE == "testnet"
+        assert cfg.BINANCE_API_KEY == "TESTNET_KEY", \
+            "testnet 모드에서 실거래 키가 로드됨"
+        assert cfg.BINANCE_SECRET_KEY == "TESTNET_SECRET"
+    print("  [PASS] mode_branch_testnet: testnet 키 로드 + 실거래 키 격리")
+
+
+def test_mode_branch_invalid():
+    """MODE 값이 live/testnet 외면 부팅 시 즉시 실패해야 한다."""
+    import importlib
+    import sys
+    with _patched_env({"MODE": "paper"}):
+        sys.modules.pop("config", None)
+        try:
+            importlib.import_module("config")
+        except AssertionError:
+            print("  [PASS] mode_branch_invalid: 잘못된 MODE 거부")
+            return
+    raise AssertionError("MODE=paper 허용됨 (AssertionError 기대)")
+
+
+def _patched_env(overrides: dict):
+    """환경변수 임시 덮어쓰기 컨텍스트 매니저."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _ctx():
+        saved = {k: os.environ.get(k) for k in overrides}
+        os.environ.update({k: v for k, v in overrides.items() if v is not None})
+        try:
+            yield
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    return _ctx()
+
+
+def test_persistence_init_and_roundtrip():
+    """init_db → record_trade → load_trades 왕복."""
+    import tempfile
+    import os as _os
+    import persistence
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = _os.path.join(tmp, "trades.db")
+        persistence.init_db(path=db_path)
+
+        persistence.record_trade(
+            "BTC/USDT", "BUY", 0.01, 50000.0, 0.5, -500.0, "testnet",
+            ts=1000.0, path=db_path,
+        )
+        persistence.record_trade(
+            "BTC/USDT", "SELL", 0.01, 50500.0, 0.5, 4500.0, "testnet",
+            ts=2000.0, path=db_path,
+        )
+        persistence.record_trade(
+            "ETH/USDT", "BUY", 0.5, 2000.0, 0.5, -500.0, "live",
+            ts=3000.0, path=db_path,
+        )
+
+        all_trades = persistence.load_trades(path=db_path)
+        assert len(all_trades) == 3
+
+        testnet_only = persistence.load_trades(mode="testnet", path=db_path)
+        assert len(testnet_only) == 2
+        assert all(t["mode"] == "testnet" for t in testnet_only)
+        # DESC 정렬 확인
+        assert testnet_only[0]["ts"] > testnet_only[1]["ts"]
+        assert testnet_only[0]["side"] == "SELL"
+
+    print("  [PASS] persistence_roundtrip: init/insert/load + mode 필터링")
+
+
+def test_record_trade_hook_called_on_sell():
+    """매도 체결 시 persistence.record_trade 가 호출되는지 (SELL + mode 전달)."""
+    from executor import GridEngine
+    from shared_state import BotState
+    import persistence
+
+    captured: list[tuple] = []
+    orig = persistence.record_trade
+
+    def fake(symbol, side, qty, price, fee, pnl, mode, ts=None, path=None):
+        captured.append((symbol, side, qty, price, mode))
+
+    persistence.record_trade = fake
+    try:
+        state = BotState()
+        ex = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+        engine = GridEngine("ETH/USDT", ex, state)
+        asyncio.run(_hook_sell_async(engine, ex))
+    finally:
+        persistence.record_trade = orig
+
+    sides = [c[1] for c in captured]
+    assert "BUY" in sides, f"초기 매수 BUY 기록 누락: {sides}"
+    assert "SELL" in sides, f"매도 체결 SELL 기록 누락: {sides}"
+    modes = {c[4] for c in captured}
+    assert modes <= {"live", "testnet"}, f"예상외 mode: {modes}"
+    print(f"  [PASS] record_trade_hook_called: {len(captured)}회 호출, sides={sides}")
+
+
+async def _hook_sell_async(engine, ex):
+    await engine.setup_grid()
+    sell_oid = list(engine.sell_orders.keys())[0]
+    ex.simulate_fill(sell_oid)
+    await engine.monitor_orders()
+
+
+# ─────────────────────────────────────────────────────────
 # Phase 3 통합 테스트 (온라인 — 실제 바이낸스 API 호출)
 # ─────────────────────────────────────────────────────────
 
@@ -1266,6 +1414,14 @@ if __name__ == "__main__":
         test_h2_min_interval_enforced()
         test_b5_stability_score_minmax_normalized()
         print("버그픽스 단위 테스트 통과!")
+
+        print("\n=== Phase 6: MODE 분기 + SQLite 영속화 ===")
+        test_mode_branch_live()
+        test_mode_branch_testnet()
+        test_mode_branch_invalid()
+        test_persistence_init_and_roundtrip()
+        test_record_trade_hook_called_on_sell()
+        print("Phase 6 단위 테스트 통과!")
 
     elif mode == "scan":
         # 통합 테스트 실행 (온라인)

@@ -84,7 +84,7 @@
 ### Phase 6 — 검증
 
 - [ ] 백테스트 (1~3년 데이터)
-- [ ] 페이퍼 트레이딩
+- [~] 페이퍼 트레이딩 — 인프라 완료 (2026-04-21 MODE=live/testnet 분기 + testnet 키 분리 + `set_sandbox_mode` + SQLite `trades.db` 체결 로그). 실연결 검증(testnet 키 발급·트래픽 실행·결과 확인) 남음.
 
 ### Phase 7 — 배포
 

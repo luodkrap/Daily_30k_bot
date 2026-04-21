@@ -20,9 +20,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ─── 실행 모드 ────────────────────────────────────────────
+# MODE=live: 바이낸스 실거래. MODE=testnet: testnet.binance.vision 가상 자금.
+# 실거래 키와 testnet 키는 별도 환경변수로 분리 관리한다 (혼용 방지).
+MODE = os.getenv("MODE", "live").lower()
+assert MODE in ("live", "testnet"), f"MODE must be 'live' or 'testnet', got {MODE!r}"
+
 # ─── API 키 ───────────────────────────────────────────────
-BINANCE_API_KEY    = os.getenv("BINANCE_API_KEY")
-BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
+if MODE == "testnet":
+    BINANCE_API_KEY    = os.getenv("BINANCE_TESTNET_API_KEY")
+    BINANCE_SECRET_KEY = os.getenv("BINANCE_TESTNET_SECRET_KEY")
+else:
+    BINANCE_API_KEY    = os.getenv("BINANCE_API_KEY")
+    BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
 TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 
