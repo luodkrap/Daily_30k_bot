@@ -1308,6 +1308,108 @@ def test_persistence_equity_and_events():
     print("  [PASS] persistence_equity_and_events: 신규 테이블 왕복")
 
 
+def test_n3_snapshot_equity_records_positions():
+    """N3: snapshot_equity() 가 잔고 + 비-USDT 포지션 평가액을 기록한다."""
+    import persistence
+    from executor import snapshot_equity
+    from shared_state import BotState
+
+    captured: list[dict] = []
+    orig = persistence.record_equity_snapshot
+
+    async def fake(mode, equity_usdt, cash_usdt, position_value_usdt,
+                   realized_pnl, unrealized_pnl, ts=None):
+        captured.append({
+            "mode": mode, "equity": equity_usdt, "cash": cash_usdt,
+            "pos": position_value_usdt, "rpnl": realized_pnl,
+            "upnl": unrealized_pnl,
+        })
+
+    persistence.record_equity_snapshot = fake
+    try:
+        state = BotState()
+        ex = MockExchangeRecovery(
+            balances={"USDT": 500.0, "ETH": 0.5},
+            tickers={"ETH/USDT": 2000.0},
+        )
+        asyncio.run(snapshot_equity(ex, state))
+    finally:
+        persistence.record_equity_snapshot = orig
+
+    assert len(captured) == 1, f"record_equity_snapshot 미호출: {captured}"
+    row = captured[0]
+    assert row["cash"] == 500.0, f"cash 오류: {row['cash']}"
+    # ETH 0.5 * $2000 = $1000
+    assert abs(row["pos"] - 1000.0) < 0.01, f"position_value 오류: {row['pos']}"
+    assert abs(row["equity"] - 1500.0) < 0.01, f"equity 오류: {row['equity']}"
+    assert row["mode"] in {"live", "testnet"}
+    print(f"  [PASS] n3_snapshot_equity: equity=${row['equity']:.2f}, "
+          f"cash=${row['cash']:.2f}, pos=${row['pos']:.2f}")
+
+
+def test_n4_market_filter_logs_transition_event():
+    """N4: BTC 200MA 상태 전환 시 record_event 가 호출된다."""
+    import persistence
+    from executor import update_market_filter
+    from shared_state import BotState
+
+    captured: list[tuple] = []
+    orig = persistence.record_event
+
+    async def fake(mode, event_type, severity, message, context=None, ts=None):
+        captured.append((event_type, severity, context))
+
+    persistence.record_event = fake
+    try:
+        state = BotState()
+        state.is_market_healthy = True  # 초기 healthy
+
+        # MockExchange 서브클래스: closes 중 앞 200개는 120, 마지막은 100 → MA200>current
+        class _BearMarket(MockExchange):
+            async def fetch_ohlcv(self, symbol, timeframe, limit=None):
+                n = limit or 201
+                prices = [120.0] * (n - 1) + [100.0]
+                return [[i, 99, 121, 99, prices[i], 1_000_000] for i in range(n)]
+
+        asyncio.run(update_market_filter(state, _BearMarket()))
+    finally:
+        persistence.record_event = orig
+
+    assert state.is_market_healthy is False, "200MA 하회인데 healthy 유지"
+    assert any(c[0] == "MARKET_FILTER" and c[1] == "WARNING" for c in captured), (
+        f"MARKET_FILTER WARNING 이벤트 누락: {captured}"
+    )
+    print(f"  [PASS] n4_market_filter_event: {len(captured)}회 기록")
+
+
+def test_n4_recover_state_logs_event():
+    """N4: recover_state() 완료 시 RECOVER_STATE 이벤트가 기록된다."""
+    import persistence
+    from executor import recover_state
+
+    captured: list[tuple] = []
+    orig = persistence.record_event
+
+    async def fake(mode, event_type, severity, message, context=None, ts=None):
+        captured.append((event_type, severity, context))
+
+    persistence.record_event = fake
+    try:
+        ex = MockExchangeRecovery(balances={"USDT": 1000.0})
+        asyncio.run(recover_state(ex))
+    finally:
+        persistence.record_event = orig
+
+    assert any(c[0] == "RECOVER_STATE" for c in captured), (
+        f"RECOVER_STATE 이벤트 누락: {captured}"
+    )
+    event = next(c for c in captured if c[0] == "RECOVER_STATE")
+    assert event[2] is not None and "canceled" in event[2], (
+        f"context 에 결과 누락: {event[2]}"
+    )
+    print(f"  [PASS] n4_recover_state_event: context keys={list(event[2].keys())}")
+
+
 def test_record_trade_hook_called_on_sell():
     """매도 체결 시 persistence.record_trade(async) 가 호출되는지 (SELL + mode 전달)."""
     from executor import GridEngine
@@ -1342,6 +1444,125 @@ async def _hook_sell_async(engine, ex):
     sell_oid = list(engine.sell_orders.keys())[0]
     ex.simulate_fill(sell_oid)
     await engine.monitor_orders()
+
+
+def test_n1_supabase_init_failure_falls_back_to_sqlite():
+    """N1: SupabaseBackend.init() 실패 시 init_db() 가 SQLite 로 degraded 기동."""
+    import tempfile
+    import os as _os
+    import persistence
+    # persistence 가 참조하는 config 객체를 그대로 사용해야 한다.
+    # test_mode_branch_* 에서 config 모듈을 reload 했을 경우 `import config`
+    # 로 새로 가져오면 persistence 가 보는 것과 다른 객체가 될 수 있음.
+    _config = persistence.config
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = _os.path.join(tmp, "fallback.db")
+            # persistence 싱글톤 + fallback 상태 초기화
+            persistence._backend = None
+            persistence._last_fallback_reason = None
+
+            saved = (_config.DB_BACKEND, _config.SUPABASE_DB_URL, _config.SQLITE_DB_PATH)
+            saved_init = persistence.SupabaseBackend.init
+            _config.DB_BACKEND = "supabase"
+            _config.SUPABASE_DB_URL = "postgres://unused:unused@localhost:5432/fake"
+            _config.SQLITE_DB_PATH = db_path
+
+            async def fake_init(self):
+                raise RuntimeError("asyncpg connect refused")
+
+            persistence.SupabaseBackend.init = fake_init
+            try:
+                result = await persistence.init_db()
+                assert result == "sqlite_fallback", f"fallback 미발동: {result}"
+                # fallback 이후 기록이 SQLite 에 쌓이는지 확인 (config 복원 전)
+                await persistence.record_trade(
+                    "BTC/USDT", "BUY", 0.01, 50000.0, 0.5, 0.0, "testnet", ts=1000.0,
+                )
+                rows = await persistence.load_trades()
+                assert len(rows) == 1 and rows[0]["symbol"] == "BTC/USDT"
+            finally:
+                persistence.SupabaseBackend.init = saved_init
+                _config.DB_BACKEND, _config.SUPABASE_DB_URL, _config.SQLITE_DB_PATH = saved
+                persistence._backend = None
+                persistence._last_fallback_reason = None
+
+    asyncio.run(_run())
+    print("  [PASS] n1_fallback_to_sqlite: Supabase init 실패 → SQLite 기록 가능")
+
+
+def test_n1_fallback_reason_exposed_for_alert():
+    """N1: fallback 사유가 get_fallback_reason() 으로 노출되어 텔레그램 알림에 사용 가능."""
+    import tempfile
+    import os as _os
+    import persistence
+    _config = persistence.config
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmp:
+            persistence._backend = None
+            persistence._last_fallback_reason = None
+
+            saved = (_config.DB_BACKEND, _config.SUPABASE_DB_URL, _config.SQLITE_DB_PATH)
+            saved_init = persistence.SupabaseBackend.init
+            _config.DB_BACKEND = "supabase"
+            _config.SUPABASE_DB_URL = "postgres://x"
+            _config.SQLITE_DB_PATH = _os.path.join(tmp, "f.db")
+
+            async def fake_init(self):
+                raise ConnectionError("DNS resolution failed for abc.supabase.co")
+
+            persistence.SupabaseBackend.init = fake_init
+            try:
+                await persistence.init_db()
+                reason = persistence.get_fallback_reason()
+                assert reason is not None, "fallback 사유가 None"
+                assert "ConnectionError" in reason, f"예외 타입 누락: {reason}"
+                assert "DNS" in reason, f"원본 메시지 누락: {reason}"
+            finally:
+                persistence.SupabaseBackend.init = saved_init
+                _config.DB_BACKEND, _config.SUPABASE_DB_URL, _config.SQLITE_DB_PATH = saved
+                persistence._backend = None
+                persistence._last_fallback_reason = None
+
+    asyncio.run(_run())
+    print("  [PASS] n1_fallback_reason_exposed: 텔레그램 알림용 사유 추출 확인")
+
+
+def test_n1_sqlite_native_failure_not_swallowed():
+    """N1: sqlite 모드에서 init 실패는 fallback 대상이 아니므로 예외가 그대로 전파되어야 한다.
+    (로컬 쓰기 실패는 숨기면 안 됨)"""
+    import persistence
+    _config = persistence.config
+
+    async def _run():
+        persistence._backend = None
+        persistence._last_fallback_reason = None
+
+        saved_backend = _config.DB_BACKEND
+        saved_init = persistence.SqliteBackend.init
+        _config.DB_BACKEND = "sqlite"
+
+        async def fake_init(self):
+            raise OSError("disk full")
+
+        persistence.SqliteBackend.init = fake_init
+        try:
+            try:
+                await persistence.init_db()
+            except OSError as e:
+                assert "disk full" in str(e)
+                return "propagated"
+            return "swallowed"
+        finally:
+            persistence.SqliteBackend.init = saved_init
+            _config.DB_BACKEND = saved_backend
+            persistence._backend = None
+
+    result = asyncio.run(_run())
+    assert result == "propagated", f"sqlite 실패가 삼켜짐: {result}"
+    print("  [PASS] n1_sqlite_failure_propagated: 로컬 쓰기 실패는 기동 차단")
 
 
 # ─────────────────────────────────────────────────────────
@@ -1385,29 +1606,14 @@ if __name__ == "__main__":
 
     mode = sys.argv[1] if len(sys.argv) > 1 else "unit"
 
-    if mode == "unit":
-        # 단위 테스트만 실행 (오프라인)
+    def _run_phase3():
         print("=== Phase 3 단위 테스트 ===")
         test_calc_atr()
         test_is_pumped()
         test_pre_filter()
-        print("Phase 3 단위 테스트 통과!\n")
+        print("Phase 3 단위 테스트 통과!")
 
-        print("=== Phase 4 단위 테스트 ===")
-        test_validate_fees()
-        test_calc_position_size()
-        test_setup_grid()
-        test_handle_buy_fill()
-        test_handle_sell_fill()
-        test_stop_loss()
-        test_market_filter()
-        test_regrid()
-        test_run_executor_kill()
-        print("Phase 4 단위 테스트 통과!\n")
-
-        print("모든 단위 테스트 통과!")
-
-    elif mode == "unit4":
+    def _run_phase4():
         print("=== Phase 4 단위 테스트 ===")
         test_validate_fees()
         test_calc_position_size()
@@ -1420,10 +1626,16 @@ if __name__ == "__main__":
         test_run_executor_kill()
         print("Phase 4 단위 테스트 통과!")
 
-    elif mode == "bugfix":
-        # executor를 기본 config 값(KRW_RATE=1350, SEED=3,000,000)으로 먼저 로드
-        # 이후 config 값을 바꿔도 executor 내 바인딩은 바뀌지 않음 → 버그 재현
+    def _run_bugfix_phase67():
+        # executor 를 기본 config 값(KRW_RATE=1350, SEED=3,000,000)으로 먼저 로드.
+        # 이후 config 값을 바꿔도 executor 내부 바인딩은 바뀌지 않음 → A1 회귀 보장.
         import executor  # noqa: F401
+        # Phase 4 `test_run_executor_kill` 이 `update_krw_rate()` 로 실제 업비트 API 를
+        # 타서 `config.KRW_RATE` 를 실시간 환율로 갱신할 수 있음. bugfix suite 은
+        # KRW_RATE=1350 을 전제로 기대값을 계산하므로 진입 시 기본값으로 복원한다.
+        import config as _cfg
+        _cfg.KRW_RATE = 1350
+        _cfg.SEED = 3_000_000
         print("=== 버그픽스 단위 테스트 ===")
         test_a1_krw_rate_runtime_change()
         test_a1_seed_runtime_change()
@@ -1454,6 +1666,38 @@ if __name__ == "__main__":
         test_persistence_equity_and_events()
         test_record_trade_hook_called_on_sell()
         print("Phase 6 단위 테스트 통과!")
+
+        print("\n=== Phase 7: N3/N4 호출부 (equity + events) ===")
+        test_n3_snapshot_equity_records_positions()
+        test_n4_market_filter_logs_transition_event()
+        test_n4_recover_state_logs_event()
+        print("Phase 7 N 트랙 단위 테스트 통과!")
+
+        print("\n=== Phase 7: N1 Supabase → SQLite fallback ===")
+        test_n1_supabase_init_failure_falls_back_to_sqlite()
+        test_n1_fallback_reason_exposed_for_alert()
+        test_n1_sqlite_native_failure_not_swallowed()
+        print("Phase 7 N1 fallback 단위 테스트 통과!")
+
+    if mode == "unit":
+        # 기본 실행: 모든 오프라인 단위 테스트 (Phase 3/4 + bugfix + Phase 6/7).
+        # C1 리팩터 안전망 — `python test.py` 한 번으로 전 회귀 커버.
+        _run_phase3()
+        print()
+        _run_phase4()
+        print()
+        _run_bugfix_phase67()
+        print("\n모든 단위 테스트 통과!")
+
+    elif mode == "unit3":
+        _run_phase3()
+
+    elif mode == "unit4":
+        _run_phase4()
+
+    elif mode == "bugfix":
+        # 하위 호환 — bugfix + Phase 6/7 만 실행 (Phase 3/4 제외).
+        _run_bugfix_phase67()
 
     elif mode == "scan":
         # 통합 테스트 실행 (온라인)

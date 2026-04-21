@@ -37,7 +37,7 @@
 
 ## 진행 중 (In Progress)
 
-없음 (🤖 다음 진입: N3+N4)
+없음 (🤖 다음 진입: N2 — persistence 공개 함수 try-except 래핑)
 
 ## 남은 작업 (Backlog)
 
@@ -114,20 +114,20 @@
 
 **치명적 (Critical) — C1 전 필수**
 
-- [ ] 🤖 N1 (2순위): `SupabaseBackend.init()` 실패 시 봇 기동 불가 → [main.py:161](main.py#L161) `try-except` + SQLite fallback degraded 부팅
+- [x] 🤖 N1 (2026-04-22 완료): `SupabaseBackend.init()` 실패 시 `persistence.init_db()` 내 SQLite degraded fallback + `main.py` 텔레그램 `[DEGRADED]` 알림 + `DB_FALLBACK` CRITICAL 이벤트 기록. 회귀 테스트 3건 (fallback 발동·사유 노출·sqlite 원시 실패 비삼킴)
 - [ ] 🤖 N2: `persistence.py` 모듈 레벨 공개 함수(`record_equity_snapshot`, `record_event`) try-except 미적용 → 설계 원칙 "기록 실패가 매매 흐름을 차단하지 않음" 모듈 자체 보장
 
 **높은 우선순위 (High)**
 
-- [ ] 🤖 N3 (1순위): `record_equity_snapshot()` 호출부 없음 → A2 완료 실체 누락. `update_krw_rate` 30분 타이머에 편승하여 주기 호출
-- [ ] 🤖 N4 (1순위): `record_event()` 호출부 없음 → 킬 스위치 발동 · `recover_state` 완료 · `_supervise` 재시작 · BTC 200MA 상태 변화 지점에 삽입
+- [x] 🤖 N3: `snapshot_equity()` 헬퍼 추가 + `run_executor` 30분 타이머 편승 (2026-04-22 `update_krw_rate` 다음에 잔고+포지션 평가액 스냅샷 기록)
+- [x] 🤖 N4: `_log_event()` 헬퍼 + 6개 지점에 호출 주입 (2026-04-22 EXECUTOR_START · KILL_SWITCH · DAILY_STOP · MARKET_FILTER 전환 · RECOVER_STATE 완료/실패 · SUPERVISOR_RESTART)
 - [ ] 🤖 N5: `executor.py:536-550` `recover_state()` 청산이 `_log_trade()` 미호출 → 재시작 청산 손익 DB 누락
 - [ ] 🤖 N6: CLAUDE.md "모든 주문: 지정가 우선" 원칙과 손절·긴급매도·recover 청산의 시장가 사용 충돌 → 예외 조항 명시
 - [ ] 🤖 N7: `SupabaseBackend` 관련 테스트 전무 → `MockAsyncpgPool`로 init 실패 / write 실패 / timeout / fallback 동작 4건
 
 **중간 (Medium)**
 
-- [ ] 🤖 N8 (3순위): `python test.py` 기본 실행이 bugfix+Phase 6 suite 제외 → WORKFLOW 명령어를 `python test.py bugfix` 로 수정하거나 기본 모드 통합
+- [x] 🤖 N8 (2026-04-22 완료): `python test.py` 기본 `unit` 모드에 bugfix+Phase 6/7 suite 통합 (Phase 3/4 헬퍼 + `_run_bugfix_phase67()` 헬퍼로 분리, `unit3`/`unit4`/`bugfix` 하위 호환 유지). Phase 4 `test_run_executor_kill` 이 `update_krw_rate` 를 통해 실제 업비트 API 로 `config.KRW_RATE` 를 오염시키던 테스트 격리 결함도 함께 해소 (bugfix suite 진입 시 `KRW_RATE=1350`/`SEED=3_000_000` 복원). C1 리팩터 안전망 확보
 - [ ] 🤖 N9: `run_executor` `DAILY_LOSS_LIMIT` 킬 경로 테스트 없음 → 외부 kill_event 설정이 아닌 손익 누적 시나리오 테스트 추가
 - [ ] 🤖 N10: `deploy/setup.sh:31` Python 3.11 vs 로컬 3.14 불일치 → 3.12+ 격상 또는 `requirements.txt` VPS 버전 재생성
 - [x] N11: [PROJECT.md:86](PROJECT.md#L86) 파일 구조 표 헤더 "Phase 5 기준" → "Phase 7 기준" (2026-04-22 문서 수정)

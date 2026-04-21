@@ -43,6 +43,56 @@ async def _log_trade(symbol: str, side: str, qty: float, price: float,
         await notify_error("persistence", e)
 
 
+async def _log_event(event_type: str, severity: str, message: str,
+                     context: dict | None = None) -> None:
+    """봇 이벤트 1건을 DB 에 비동기 기록. 실패해도 매매 흐름은 차단하지 않는다."""
+    try:
+        await persistence.record_event(
+            config.MODE, event_type, severity, message, context,
+        )
+    except Exception as e:
+        await notify_error("persistence.event", e)
+
+
+async def snapshot_equity(exchange, state: BotState) -> None:
+    """현재 잔고 + 포지션 평가액으로 equity snapshot 1건 기록.
+
+    USDT 잔고는 cash, 비-USDT 자산은 현재가 × 수량으로 position_value 로 환산.
+    realized_pnl 은 state.daily_pnl(원) 을 KRW_RATE 로 USDT 환산한 값.
+    unrealized_pnl 은 엔진 외부에서 평균매수가를 알 수 없어 0 으로 기록."""
+    try:
+        balance = await _retry_api(exchange.fetch_balance)
+        totals = balance.get("total") or {}
+        cash = float(totals.get("USDT", 0.0) or 0.0)
+
+        markets = getattr(exchange, "markets", {}) or {}
+        position_value = 0.0
+        for currency, amount in totals.items():
+            if currency == "USDT" or not amount or amount <= 0:
+                continue
+            symbol = f"{currency}/USDT"
+            if symbol not in markets:
+                continue
+            try:
+                ticker = await _retry_api(exchange.fetch_ticker, symbol)
+                price = ticker.get("last") or 0.0
+                if price > 0:
+                    position_value += float(amount) * float(price)
+            except Exception:
+                continue
+
+        equity = cash + position_value
+        realized_usdt = (state.daily_pnl / config.KRW_RATE
+                         if config.KRW_RATE > 0 else 0.0)
+        await persistence.record_equity_snapshot(
+            mode=config.MODE, equity_usdt=equity, cash_usdt=cash,
+            position_value_usdt=position_value,
+            realized_pnl=realized_usdt, unrealized_pnl=0.0,
+        )
+    except Exception as e:
+        await notify_error("persistence.equity_snapshot", e)
+
+
 async def _retry_api(fn, *args, max_retries=3, **kwargs):
     """API 호출 재시도 (지수 백오프: 1s → 2s → 4s)."""
     for attempt in range(max_retries):
@@ -453,9 +503,16 @@ async def update_market_filter(state: BotState, exchange) -> None:
 
         was_healthy = state.is_market_healthy
         state.is_market_healthy = ma_healthy
-        if was_healthy and not state.is_market_healthy:
-            await send(f"[시장 필터] BTC 200MA 하회 — 신규 진입 차단\n"
-                       f"BTC: ${current:,.0f} < MA200: ${ma_200:,.0f}")
+        if was_healthy != ma_healthy:
+            if was_healthy and not ma_healthy:
+                await send(f"[시장 필터] BTC 200MA 하회 — 신규 진입 차단\n"
+                           f"BTC: ${current:,.0f} < MA200: ${ma_200:,.0f}")
+            await _log_event(
+                "MARKET_FILTER",
+                "WARNING" if not ma_healthy else "INFO",
+                f"BTC 200MA {'하회' if not ma_healthy else '회복'}",
+                {"btc": current, "ma200": ma_200, "healthy": ma_healthy},
+            )
     except Exception as e:
         await notify_error("MarketFilter", e)
 
@@ -562,6 +619,13 @@ async def recover_state(exchange) -> dict:
     if result["skipped"]:
         lines.append(f"스킵: {', '.join(result['skipped'])}")
     await send("\n".join(lines))
+    await _log_event(
+        "RECOVER_STATE", "INFO",
+        f"재시작 정리 완료 — 취소 {result['canceled']}, 청산 {len(result['liquidated'])}",
+        {"canceled": result["canceled"],
+         "liquidated": result["liquidated"],
+         "skipped": result["skipped"]},
+    )
     return result
 
 
@@ -604,11 +668,16 @@ async def run_executor(state: BotState, exchange) -> None:
 
     print("[Executor] 시작")
 
+    await _log_event("EXECUTOR_START", "INFO",
+                     f"executor 시작 MODE={config.MODE}")
+
     # 재시작 상태 복구 (C2) — 이전 세션 잔존 주문·포지션 정리
     try:
         await recover_state(exchange)
     except Exception as e:
         await notify_error("Executor.recover_state", e)
+        await _log_event("RECOVER_STATE_FAILED", "CRITICAL",
+                         f"recover_state 실패 — 봇 종료: {e}")
         state.kill_event.set()
         return
 
@@ -628,6 +697,12 @@ async def run_executor(state: BotState, exchange) -> None:
             # ── 2. 일일 손실 한도 초과 → 킬 스위치 ──
             if state.daily_pnl <= -config.DAILY_LOSS_LIMIT:
                 await notify_kill_switch()
+                await _log_event(
+                    "KILL_SWITCH", "CRITICAL",
+                    "일일 손실 한도 초과",
+                    {"daily_pnl_krw": state.daily_pnl,
+                     "limit_krw": config.DAILY_LOSS_LIMIT},
+                )
                 if engine:
                     await engine.emergency_sell("일일 손실 한도 초과")
                 state.kill_event.set()
@@ -637,16 +712,21 @@ async def run_executor(state: BotState, exchange) -> None:
             if state.should_stop_profit:
                 reason = "목표 수익 달성" if state.daily_pnl >= 0 else "조기 중단 (시장 악화)"
                 await notify_daily_stop(reason, state.daily_pnl)
+                await _log_event(
+                    "DAILY_STOP", "INFO", reason,
+                    {"daily_pnl_krw": state.daily_pnl},
+                )
                 if engine:
                     await engine.emergency_sell(reason)
                 state.kill_event.set()
                 break
 
-            # ── 4. 200MA 체크 + 환율 갱신 (30분마다) ──
+            # ── 4. 200MA 체크 + 환율 갱신 + equity snapshot (30분마다) ──
             now = time.time()
             if now - last_ma_check > 1800:
                 await update_market_filter(state, exchange)
                 await update_krw_rate()
+                await snapshot_equity(exchange, state)
                 last_ma_check = now
 
             # ── 5. 타겟 코인 없으면 대기 ──

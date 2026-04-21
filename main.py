@@ -23,6 +23,7 @@ main.py
 """
 import asyncio
 import ccxt.async_support as ccxt_async
+import config
 from config import BINANCE_API_KEY, BINANCE_SECRET_KEY, MODE
 import persistence
 from shared_state import BotState
@@ -125,6 +126,7 @@ async def run_telegram_bot(state: BotState) -> None:
 async def _supervise(name: str, coro_factory, state: BotState, max_restarts: int = 5) -> None:
     """컴포넌트 코루틴을 감시하고 예외 발생 시 재시작.
     재시작 한도(max_restarts) 초과 시 킬 이벤트를 set 하여 전체 안전 종료."""
+    import config
     restarts = 0
     while not state.kill_event.is_set():
         try:
@@ -133,6 +135,15 @@ async def _supervise(name: str, coro_factory, state: BotState, max_restarts: int
         except Exception as e:
             restarts += 1
             await notify_error(f"{name} (재시작 {restarts}/{max_restarts})", e)
+            try:
+                await persistence.record_event(
+                    config.MODE, "SUPERVISOR_RESTART",
+                    "CRITICAL" if restarts >= max_restarts else "WARNING",
+                    f"{name} 예외 재시작 {restarts}/{max_restarts}",
+                    {"component": name, "error": str(e), "restarts": restarts},
+                )
+            except Exception:
+                pass
             if restarts >= max_restarts:
                 await send(f"[치명적] {name} 재시작 한도 초과 — 봇 종료")
                 state.kill_event.set()
@@ -158,7 +169,23 @@ async def main() -> None:
 
     try:
         await init_session()
-        await persistence.init_db()
+        backend_used = await persistence.init_db()
+        if backend_used == "sqlite_fallback":
+            reason = persistence.get_fallback_reason() or "unknown"
+            await send(
+                f"[DEGRADED] Supabase 연결 실패 → SQLite fallback 로 기동\n"
+                f"사유: {reason}\n"
+                f"운영 대시보드(Supabase) 는 일시적으로 비어있으며, "
+                f"로컬 {config.SQLITE_DB_PATH} 에 체결·이벤트가 기록됩니다."
+            )
+            try:
+                await persistence.record_event(
+                    MODE, "DB_FALLBACK", "CRITICAL",
+                    f"SupabaseBackend.init 실패 — SQLite fallback",
+                    {"reason": reason},
+                )
+            except Exception:
+                pass
         await send(f"Daily 30K Bot 시작! [MODE={MODE.upper()}]")
         # 각 컴포넌트는 supervisor로 격리 — 한 개가 죽어도 나머지는 계속 동작
         # return_exceptions=True 는 supervisor 자체가 예외를 흘릴 가능성 대비 이중 안전망

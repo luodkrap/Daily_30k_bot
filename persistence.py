@@ -261,6 +261,7 @@ class SupabaseBackend:
 
 # ─── 모듈 레벨 싱글톤 ─────────────────────────────────────
 _backend = None
+_last_fallback_reason: str | None = None
 
 
 def _get_backend():
@@ -274,8 +275,27 @@ def _get_backend():
     return _backend
 
 
-async def init_db() -> None:
-    await _get_backend().init()
+async def init_db() -> str:
+    """백엔드 초기화. Supabase 실패 시 SQLite 로 degraded 기동 (N1).
+    반환: 실제 사용 중인 백엔드 식별자 ("sqlite" | "supabase" | "sqlite_fallback").
+    운영 단일 장애점 해소 — Supabase DNS/Pool/스키마 오류가 봇 기동을 차단하지 않도록."""
+    global _backend, _last_fallback_reason
+    try:
+        await _get_backend().init()
+        return config.DB_BACKEND
+    except Exception as e:
+        # sqlite 자체 실패는 fallback 대상이 아님 (로컬 쓰기 불가 = 치명적)
+        if config.DB_BACKEND != "supabase":
+            raise
+        _last_fallback_reason = f"{type(e).__name__}: {e}"
+        _backend = SqliteBackend(path=config.SQLITE_DB_PATH)
+        await _backend.init()
+        return "sqlite_fallback"
+
+
+def get_fallback_reason() -> str | None:
+    """직전 init_db() 호출에서 Supabase→SQLite fallback 이 발생한 경우 사유 반환."""
+    return _last_fallback_reason
 
 
 async def record_trade(
