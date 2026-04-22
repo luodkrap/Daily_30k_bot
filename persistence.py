@@ -298,14 +298,29 @@ def get_fallback_reason() -> str | None:
     return _last_fallback_reason
 
 
+async def _safe_notify_backend_error(context: str, exc: BaseException) -> None:
+    """백엔드 쓰기 실패 알림 (N2). notifier 자체 장애도 삼킨다 —
+    persistence 가 매매 흐름 차단의 원인이 되지 않도록 전방위 안전망."""
+    try:
+        from notifier import notify_error
+        await notify_error(context, exc)
+    except Exception:
+        print(f"[persistence] {context}: {type(exc).__name__}: {exc}")
+
+
 async def record_trade(
     symbol: str, side: str, qty: float, price: float,
     fee: float, pnl: float, mode: str, ts: float | None = None,
 ) -> None:
-    await _get_backend().record_trade(symbol, side, qty, price, fee, pnl, mode, ts)
+    """체결 1건 기록. 백엔드 실패는 모듈 내에서 격리 (N2)."""
+    try:
+        await _get_backend().record_trade(symbol, side, qty, price, fee, pnl, mode, ts)
+    except Exception as e:
+        await _safe_notify_backend_error("persistence.record_trade", e)
 
 
 async def load_trades(mode: str | None = None, limit: int = 100) -> list[dict]:
+    # 읽기 전용 — 매매 흐름에 쓰이지 않으므로 예외 전파 유지 (리포트/테스트용)
     return await _get_backend().load_trades(mode=mode, limit=limit)
 
 
@@ -314,14 +329,22 @@ async def record_equity_snapshot(
     position_value_usdt: float, realized_pnl: float, unrealized_pnl: float,
     ts: float | None = None,
 ) -> None:
-    await _get_backend().record_equity_snapshot(
-        mode, equity_usdt, cash_usdt, position_value_usdt,
-        realized_pnl, unrealized_pnl, ts,
-    )
+    """자산 스냅샷 기록. 백엔드 실패는 모듈 내에서 격리 (N2)."""
+    try:
+        await _get_backend().record_equity_snapshot(
+            mode, equity_usdt, cash_usdt, position_value_usdt,
+            realized_pnl, unrealized_pnl, ts,
+        )
+    except Exception as e:
+        await _safe_notify_backend_error("persistence.record_equity_snapshot", e)
 
 
 async def record_event(
     mode: str, event_type: str, severity: str, message: str,
     context: dict[str, Any] | None = None, ts: float | None = None,
 ) -> None:
-    await _get_backend().record_event(mode, event_type, severity, message, context, ts)
+    """봇 이벤트 기록. 백엔드 실패는 모듈 내에서 격리 (N2)."""
+    try:
+        await _get_backend().record_event(mode, event_type, severity, message, context, ts)
+    except Exception as e:
+        await _safe_notify_backend_error("persistence.record_event", e)

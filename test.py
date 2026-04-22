@@ -1565,6 +1565,126 @@ def test_n1_sqlite_native_failure_not_swallowed():
     print("  [PASS] n1_sqlite_failure_propagated: 로컬 쓰기 실패는 기동 차단")
 
 
+# ─── N2: persistence 공개 함수 자체 격리 (백엔드 실패가 매매 흐름에 전파되지 않음) ───
+
+class _FailingBackend:
+    """모든 write 가 예외를 던지는 mock 백엔드 (N2 테스트 전용)."""
+    def __init__(self, exc: BaseException):
+        self.exc = exc
+
+    async def record_trade(self, *a, **kw):
+        raise self.exc
+
+    async def record_equity_snapshot(self, *a, **kw):
+        raise self.exc
+
+    async def record_event(self, *a, **kw):
+        raise self.exc
+
+
+def _n2_run_with_failing_backend(coro_factory, exc: BaseException):
+    """FailingBackend + notifier.notify_error 캡처로 공개 함수를 실행.
+    반환: (raised_exc_or_None, captured_notifier_calls)."""
+    import persistence
+    import notifier
+
+    captured: list[tuple] = []
+
+    async def fake_notify_error(ctx, e):
+        captured.append((ctx, e))
+
+    orig_backend = persistence._backend
+    orig_notify = notifier.notify_error
+    persistence._backend = _FailingBackend(exc)
+    notifier.notify_error = fake_notify_error
+    raised = None
+    try:
+        try:
+            asyncio.run(coro_factory())
+        except BaseException as e:
+            raised = e
+    finally:
+        persistence._backend = orig_backend
+        notifier.notify_error = orig_notify
+    return raised, captured
+
+
+def test_n2_record_trade_swallows_backend_error():
+    """N2: 백엔드 record_trade 예외를 persistence 공개 함수가 삼키고 notifier 로 알림."""
+    import persistence
+    exc = RuntimeError("asyncpg pool drained")
+    raised, captured = _n2_run_with_failing_backend(
+        lambda: persistence.record_trade(
+            "BTC/USDT", "BUY", 0.01, 50000.0, 0.5, 0.0, "testnet",
+        ),
+        exc,
+    )
+    assert raised is None, f"예외가 전파됨: {raised!r}"
+    assert len(captured) == 1, f"notify_error 호출 횟수 이상: {captured}"
+    assert captured[0][0] == "persistence.record_trade"
+    assert captured[0][1] is exc
+    print("  [PASS] n2_record_trade_swallows: 백엔드 실패가 호출부로 전파되지 않음")
+
+
+def test_n2_record_event_swallows_backend_error():
+    """N2: 백엔드 record_event 예외를 persistence 공개 함수가 삼키고 notifier 로 알림."""
+    import persistence
+    exc = ConnectionError("postgres terminated connection")
+    raised, captured = _n2_run_with_failing_backend(
+        lambda: persistence.record_event(
+            "testnet", "TEST", "INFO", "msg", {"k": "v"},
+        ),
+        exc,
+    )
+    assert raised is None, f"예외가 전파됨: {raised!r}"
+    assert len(captured) == 1 and captured[0][0] == "persistence.record_event"
+    print("  [PASS] n2_record_event_swallows: 매매 흐름 차단 없음")
+
+
+def test_n2_record_equity_snapshot_swallows_backend_error():
+    """N2: 백엔드 record_equity_snapshot 예외를 공개 함수가 삼키고 notifier 로 알림."""
+    import persistence
+    exc = TimeoutError("acquire pool timeout 10s")
+    raised, captured = _n2_run_with_failing_backend(
+        lambda: persistence.record_equity_snapshot(
+            "testnet", 1000.0, 800.0, 200.0, 50.0, 0.0,
+        ),
+        exc,
+    )
+    assert raised is None, f"예외가 전파됨: {raised!r}"
+    assert len(captured) == 1 and captured[0][0] == "persistence.record_equity_snapshot"
+    print("  [PASS] n2_record_equity_swallows: 30분 스냅샷 타이머가 지속 가능")
+
+
+def test_n2_notifier_failure_also_swallowed():
+    """N2: notifier 자체 장애(텔레그램 다운 등)에도 persistence 공개 함수는 예외 미전파."""
+    import persistence
+    import notifier
+
+    orig_backend = persistence._backend
+    orig_notify = notifier.notify_error
+    persistence._backend = _FailingBackend(RuntimeError("db down"))
+
+    async def failing_notify(ctx, e):
+        raise RuntimeError("telegram API timeout")
+
+    notifier.notify_error = failing_notify
+    raised = None
+    try:
+        try:
+            asyncio.run(persistence.record_event(
+                "testnet", "TEST", "INFO", "msg",
+            ))
+        except BaseException as e:
+            raised = e
+    finally:
+        persistence._backend = orig_backend
+        notifier.notify_error = orig_notify
+
+    assert raised is None, f"notifier 실패가 전파됨: {raised!r}"
+    print("  [PASS] n2_notifier_failure_swallowed: 이중 장애에도 매매 흐름 유지")
+
+
 # ─────────────────────────────────────────────────────────
 # Phase 3 통합 테스트 (온라인 — 실제 바이낸스 API 호출)
 # ─────────────────────────────────────────────────────────
@@ -1678,6 +1798,13 @@ if __name__ == "__main__":
         test_n1_fallback_reason_exposed_for_alert()
         test_n1_sqlite_native_failure_not_swallowed()
         print("Phase 7 N1 fallback 단위 테스트 통과!")
+
+        print("\n=== Phase 7: N2 persistence 공개 함수 자체 격리 ===")
+        test_n2_record_trade_swallows_backend_error()
+        test_n2_record_event_swallows_backend_error()
+        test_n2_record_equity_snapshot_swallows_backend_error()
+        test_n2_notifier_failure_also_swallowed()
+        print("Phase 7 N2 자체 격리 단위 테스트 통과!")
 
     if mode == "unit":
         # 기본 실행: 모든 오프라인 단위 테스트 (Phase 3/4 + bugfix + Phase 6/7).

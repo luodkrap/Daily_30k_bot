@@ -34,24 +34,18 @@ import persistence
 
 async def _log_trade(symbol: str, side: str, qty: float, price: float,
                      fee: float, pnl: float) -> None:
-    """체결 1건을 DB 에 비동기 기록. 실패해도 매매 흐름은 차단하지 않는다."""
-    try:
-        await persistence.record_trade(
-            symbol, side, qty, price, fee, pnl, config.MODE,
-        )
-    except Exception as e:
-        await notify_error("persistence", e)
+    """체결 1건을 DB 에 비동기 기록. persistence 가 실패 격리를 내장 (N2)."""
+    await persistence.record_trade(
+        symbol, side, qty, price, fee, pnl, config.MODE,
+    )
 
 
 async def _log_event(event_type: str, severity: str, message: str,
                      context: dict | None = None) -> None:
-    """봇 이벤트 1건을 DB 에 비동기 기록. 실패해도 매매 흐름은 차단하지 않는다."""
-    try:
-        await persistence.record_event(
-            config.MODE, event_type, severity, message, context,
-        )
-    except Exception as e:
-        await notify_error("persistence.event", e)
+    """봇 이벤트 1건을 DB 에 비동기 기록. persistence 가 실패 격리를 내장 (N2)."""
+    await persistence.record_event(
+        config.MODE, event_type, severity, message, context,
+    )
 
 
 async def snapshot_equity(exchange, state: BotState) -> None:

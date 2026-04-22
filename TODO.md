@@ -37,7 +37,7 @@
 
 ## 진행 중 (In Progress)
 
-없음 (🤖 다음 진입: N2 — persistence 공개 함수 try-except 래핑)
+없음 (🤖 다음 진입: N5 — `recover_state()` 시장가 청산 후 `_log_trade()` 호출 추가)
 
 ## 남은 작업 (Backlog)
 
@@ -115,7 +115,7 @@
 **치명적 (Critical) — C1 전 필수**
 
 - [x] 🤖 N1 (2026-04-22 완료): `SupabaseBackend.init()` 실패 시 `persistence.init_db()` 내 SQLite degraded fallback + `main.py` 텔레그램 `[DEGRADED]` 알림 + `DB_FALLBACK` CRITICAL 이벤트 기록. 회귀 테스트 3건 (fallback 발동·사유 노출·sqlite 원시 실패 비삼킴)
-- [ ] 🤖 N2: `persistence.py` 모듈 레벨 공개 함수(`record_equity_snapshot`, `record_event`) try-except 미적용 → 설계 원칙 "기록 실패가 매매 흐름을 차단하지 않음" 모듈 자체 보장
+- [x] 🤖 N2 (2026-04-22 완료): `persistence.py` 공개 함수 3개(`record_trade`·`record_equity_snapshot`·`record_event`) 에 `try/except` + `_safe_notify_backend_error` 헬퍼(notifier 지연 import + 이중 장애 stderr fallback) 내장. 설계 원칙 "기록 실패가 매매 흐름을 차단하지 않음" 을 호출부가 아닌 모듈 자체가 보장. `executor._log_trade`/`_log_event` 및 `main._supervise`/부트 flow 의 dead `try/except` 제거. 회귀 테스트 4건 (트레이드/이벤트/에쿼티 write 실패 + notifier 이중 장애 삼킴)
 
 **높은 우선순위 (High)**
 

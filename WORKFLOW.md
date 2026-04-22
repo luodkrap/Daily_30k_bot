@@ -9,7 +9,7 @@
 
 | 항목 | 값 |
 |------|----|
-| **현재 Phase** | Phase 7 감사 후 보완 중 — A 트랙 코드 완료, N3+N4·N1·N8 완료(2026-04-22). C1 전 선결 Top 3 전부 해소. 다음은 N2(Critical) 또는 A1b·A4 사용자 액션 병행 |
+| **현재 Phase** | Phase 7 감사 후 보완 중 — A 트랙 코드 완료, N3+N4·N1·N8·N2 완료(2026-04-22). Critical 전량 해소. 다음은 N5(High) 또는 A1b·A4 사용자 액션 병행 |
 | **마지막 점검** | 2026-04-22 (project-auditor 전체 감사 — A 트랙 + Phase 6 + 버그픽스 누적 반영) |
 | **점검 누적** | 3/3 |
 | **남은 블로커** | 없음 — N1 Supabase fallback 완료로 운영 단일 장애점 해소 |
@@ -61,6 +61,7 @@ python main.py
 
 | 날짜 | 파일 | 변경 이유 |
 |------|------|-----------|
+| 2026-04-22 | [persistence.py](persistence.py), [executor.py](executor.py), [main.py](main.py), [test.py](test.py) | N2: `persistence` 공개 함수 3개(`record_trade`/`record_equity_snapshot`/`record_event`) 자체 try-except + `_safe_notify_backend_error` 헬퍼(notifier 지연 import + 이중 장애 stderr fallback). 설계 원칙 "기록 실패가 매매 흐름을 차단하지 않음"을 모듈 자체가 보장. `executor._log_trade`/`_log_event` 와 `main._supervise`/부트 flow 의 dead try-except 제거. 회귀 테스트 4건 (trade/event/equity write 실패 삼킴 + notifier 이중 장애 삼킴) |
 | 2026-04-22 | [test.py](test.py) | N8: `python test.py` 기본 `unit` 모드에 bugfix+Phase 6/7 suite 통합. 헬퍼 3개(`_run_phase3`/`_run_phase4`/`_run_bugfix_phase67`)로 분리하여 `unit`/`unit3`/`unit4`/`bugfix` 모드에서 재사용. Phase 4 `test_run_executor_kill` 이 실제 업비트 API 로 `config.KRW_RATE` 를 오염시키던 테스트 격리 결함도 해소 (bugfix suite 진입 시 KRW_RATE/SEED 기본값 복원). C1 리팩터 안전망 확보 |
 | 2026-04-22 | [persistence.py](persistence.py), [main.py](main.py), [test.py](test.py) | N1: `init_db()` Supabase→SQLite degraded fallback + `get_fallback_reason()` API. main.py 에서 `[DEGRADED]` 텔레그램 + `DB_FALLBACK` CRITICAL 이벤트 기록. 회귀 테스트 3건 (fallback 발동·사유 노출·sqlite 원시 실패 비삼킴). 운영 단일 장애점 해소 |
 | 2026-04-22 | [executor.py](executor.py), [main.py](main.py), [test.py](test.py) | N3+N4: `snapshot_equity()` + `_log_event()` 헬퍼 추가 및 6개 호출 지점 주입 (EXECUTOR_START · KILL_SWITCH · DAILY_STOP · MARKET_FILTER 전환 · RECOVER_STATE 완료/실패 · SUPERVISOR_RESTART). 30분 타이머에 equity snapshot 편승. 회귀 테스트 3건 추가 |
@@ -121,10 +122,10 @@ Day ~14
 
 > 감사 Top 3 선결 과제: **N3+N4 → N1 → N8**. 상세 우선순위·영향 범위 → [TODO.md](TODO.md) "감사 결과 추가 (2026-04-22)" 섹션.
 
-**🔴 Critical — 1순위**
+**🔴 Critical — 1순위** (전량 완료 2026-04-22)
 - [x] ~~**N3+N4** (2026-04-22 완료): `snapshot_equity()` / `_log_event()` 헬퍼 + 6개 호출 지점 주입 + 회귀 테스트 3건~~
 - [x] ~~**N1** (2026-04-22 완료): `persistence.init_db()` Supabase→SQLite degraded fallback + `[DEGRADED]` 텔레그램 + `DB_FALLBACK` CRITICAL 이벤트 + 회귀 테스트 3건. 운영 단일 장애점 해소~~
-- [ ] N2 (Critical): [persistence.py:277-307](persistence.py#L277-L307) 모듈 레벨 공개 함수 try-except 래핑 (record_equity_snapshot·record_event·record_trade)
+- [x] ~~**N2** (2026-04-22 완료): `persistence` 공개 함수 3개 자체 try-except + `_safe_notify_backend_error` (notifier 지연 import + 이중 장애 stderr fallback). `executor._log_trade`/`_log_event` 와 `main._supervise`/부트 flow 의 dead try-except 제거. 회귀 테스트 4건. 매매 흐름 격리를 모듈 자체가 보장~~
 
 **🟠 High**
 - [ ] N5: [executor.py:536-550](executor.py#L536-L550) `recover_state()` 시장가 청산 후 `_log_trade()` 호출 추가
@@ -188,6 +189,7 @@ A 와 독립. 로컬 개발 환경에서 진행. **C1 전 반드시 N3+N4 → N1
 
 | 날짜 | ID | 내용 |
 |------|----|------|
+| 2026-04-22 | N2 | `persistence.py` — 공개 함수 3개(`record_trade`·`record_equity_snapshot`·`record_event`) 에 `try/except` + `_safe_notify_backend_error` 내장 (notifier 지연 import, notifier 자체 실패 시 `print` fallback 으로 이중 삼킴). 설계 원칙 "기록 실패가 매매 흐름을 차단하지 않음" 을 호출부가 아닌 모듈 자체가 보장. `executor._log_trade`/`_log_event` 및 `main._supervise`/부트 flow 의 persistence 전용 `try/except` 4곳을 dead code 로 간주하고 제거 (`snapshot_equity` 는 `fetch_balance`/`fetch_ticker` 예외도 잡으므로 유지). 회귀 테스트 4건: `test_n2_record_trade_swallows_backend_error`, `test_n2_record_event_swallows_backend_error`, `test_n2_record_equity_snapshot_swallows_backend_error`, `test_n2_notifier_failure_also_swallowed` (`_FailingBackend` + `notifier.notify_error` 몽키패치). Critical 트랙 전량 해소 |
 | 2026-04-22 | N8 | `test.py` — `python test.py` 기본 `unit` 모드에 bugfix+Phase 6/7 suite 통합. 헬퍼 3개 (`_run_phase3`/`_run_phase4`/`_run_bugfix_phase67`) 로 분리 + `unit3`/`unit4`/`bugfix` 모드 하위 호환 유지. Phase 4 `test_run_executor_kill` 이 `update_krw_rate()` 로 실제 업비트 API 를 타서 `config.KRW_RATE` 를 실시간 환율로 덮어쓰던 테스트 격리 결함을 `_run_bugfix_phase67` 진입 시 KRW_RATE/SEED 기본값 복원으로 해소. C1 리팩터 안전망 확보 |
 | 2026-04-22 | N1 | `persistence.py` — `init_db()` Supabase 실패 시 SQLite degraded fallback (`sqlite_fallback` 반환). `_last_fallback_reason` 저장 + `get_fallback_reason()` API. `main.py` — fallback 감지 시 `[DEGRADED]` 텔레그램 + `DB_FALLBACK` CRITICAL 이벤트 기록. 회귀 테스트 3건 (`test_n1_supabase_init_failure_falls_back_to_sqlite`, `test_n1_fallback_reason_exposed_for_alert`, `test_n1_sqlite_native_failure_not_swallowed`). 운영 단일 장애점 해소 — Supabase DNS/Pool/스키마 오류가 봇 기동을 차단하지 않음 |
 | 2026-04-22 | N3+N4 | `executor.py` — `snapshot_equity()` 헬퍼 (USDT 잔고 + 비-USDT 포지션 평가액 합산) + `_log_event()` 헬퍼 추가. `run_executor` 30분 타이머에 equity snapshot 편승, 6개 지점에 `record_event` 주입 (EXECUTOR_START / KILL_SWITCH / DAILY_STOP / MARKET_FILTER 전환 / RECOVER_STATE 완료·실패 / SUPERVISOR_RESTART `main.py`). 회귀 테스트 3건 (`test_n3_snapshot_equity_records_positions`, `test_n4_market_filter_logs_transition_event`, `test_n4_recover_state_logs_event`) |
