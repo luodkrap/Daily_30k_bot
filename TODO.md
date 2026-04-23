@@ -11,10 +11,8 @@
 
 ### 🟢 지금 즉시 병행 가능
 
-- [ ] **A1b** (~15분): https://supabase.com 프로젝트 생성 → SQL Editor 에 [deploy/schema.sql](deploy/schema.sql) 붙여넣기 실행 → Settings → Database → Connection pooling(6543) URI 복사 → `.env` `SUPABASE_DB_URL` 기입
+- [x] **A1b** (2026-04-23 완료): Supabase 프로젝트 생성 (서울 리전) + `deploy/schema.sql` 적용 + Pooler(6543) URI `.env` 기입. 로컬 `asyncpg` 검증 통과 — Postgres 17.6 연결 OK, 3개 테이블 컬럼·타입 1:1 일치
 - [ ] **A4** (~30분): AWS Lightsail 인스턴스 생성 (서울, $5 플랜, Ubuntu 22.04) → SSH 접속 → `bash deploy/setup.sh` 실행 → `.env` 에 Supabase URI·바이낸스 키 입력 → `sudo systemctl start daily30k`
-
-> 💡 **권장 순서:** 🤖 N1(SQLite fallback) 완료 후 → 👤 A1b 진행. Supabase 설정 실수 있어도 봇이 SQLite 로 기동됨.
 
 ### 🟡 A1b + A4 완료 후
 
@@ -151,7 +149,7 @@
 
 > 사용자 액션 상세는 파일 상단 **"👤 사용자 액션 남은 것"** 섹션 참조.
 
-- [~] A1: Supabase 프로젝트 — `deploy/schema.sql` 작성 완료 (trades + equity_snapshots + bot_events, IF NOT EXISTS). **남은 사용자 액션 → 상단 A1b**
+- [x] A1: Supabase 프로젝트 — `deploy/schema.sql` 작성 (2026-04-21) + 서울 리전 프로젝트 생성·스키마 적용·Pooler URI `.env` 기입 (2026-04-23 A1b 완료)
 - [x] A2: `persistence.py` asyncpg 듀얼 백엔드 — `SqliteBackend` / `SupabaseBackend` 클래스, 모듈 레벨 async 인터페이스, `config.DB_BACKEND` 싱글톤 분기. asyncpg 지연 임포트. (2026-04-21) **⚠ 2026-04-22 감사: `record_equity_snapshot`/`record_event` 호출부 미구현 → 🤖 N3/N4 에서 보완**
 - [x] A3: `config.py` `DB_BACKEND` / `SQLITE_DB_PATH` / `SUPABASE_DB_URL` 추가. `.env.example` DB 섹션 + Pooler URI 안내. `requirements.txt` `asyncpg==0.30.0`. (2026-04-21)
 - [ ] 👤 **A4**: AWS Lightsail 인스턴스 생성 (서울 리전, $5 플랜, Ubuntu 22.04) — **사용자 액션 → 상단 A4**

@@ -9,10 +9,10 @@
 
 | 항목 | 값 |
 |------|----|
-| **현재 Phase** | Phase 7 감사 후 보완 중 — A 트랙 코드 완료, N3+N4·N1·N8·N2 완료(2026-04-22). Critical 전량 해소. 다음은 N5(High) 또는 A1b·A4 사용자 액션 병행 |
+| **현재 Phase** | Phase 7 감사 후 보완 중 — A 트랙 코드 완료, N3+N4·N1·N8·N2 완료(2026-04-22), **A1b 완료(2026-04-23)**. Critical 전량 해소. 다음은 👤 A4(Lightsail) 또는 🤖 N5/N6/N7(High 잔여) |
 | **마지막 점검** | 2026-04-22 (project-auditor 전체 감사 — A 트랙 + Phase 6 + 버그픽스 누적 반영) |
 | **점검 누적** | 3/3 |
-| **남은 블로커** | 없음 — N1 Supabase fallback 완료로 운영 단일 장애점 해소 |
+| **남은 블로커** | 없음 — Supabase 운영 DB 검증 완료 (Postgres 17.6, 3 테이블 컬럼 1:1 일치) |
 | **테스트 상태** | 전체 통과 (`python test.py` 기본 실행으로 Phase 3/4 + bugfix + Phase 6/7 전부 커버) |
 | **로드맵 플랜** | `~/.claude/plans/streamed-launching-cascade.md` (2026-04-22 승인 — 역할 분담·타임라인) |
 
@@ -61,6 +61,7 @@ python main.py
 
 | 날짜 | 파일 | 변경 이유 |
 |------|------|-----------|
+| 2026-04-23 | [.env](.env), [TODO.md](TODO.md), [WORKFLOW.md](WORKFLOW.md) | A1b (사용자 액션): Supabase 프로젝트 생성 (서울 리전, Free 플랜) → `deploy/schema.sql` 적용 → Transaction Pooler(6543) URI `.env` `SUPABASE_DB_URL` 기입. 로컬 `asyncpg` 검증: Postgres 17.6 연결·3개 테이블(`trades`/`equity_snapshots`/`bot_events`) 존재·컬럼·타입 `schema.sql` 과 1:1 일치 확인. 운영 DB 블로커 해소, A4(Lightsail) 만 남음 |
 | 2026-04-22 | [persistence.py](persistence.py), [executor.py](executor.py), [main.py](main.py), [test.py](test.py) | N2: `persistence` 공개 함수 3개(`record_trade`/`record_equity_snapshot`/`record_event`) 자체 try-except + `_safe_notify_backend_error` 헬퍼(notifier 지연 import + 이중 장애 stderr fallback). 설계 원칙 "기록 실패가 매매 흐름을 차단하지 않음"을 모듈 자체가 보장. `executor._log_trade`/`_log_event` 와 `main._supervise`/부트 flow 의 dead try-except 제거. 회귀 테스트 4건 (trade/event/equity write 실패 삼킴 + notifier 이중 장애 삼킴) |
 | 2026-04-22 | [test.py](test.py) | N8: `python test.py` 기본 `unit` 모드에 bugfix+Phase 6/7 suite 통합. 헬퍼 3개(`_run_phase3`/`_run_phase4`/`_run_bugfix_phase67`)로 분리하여 `unit`/`unit3`/`unit4`/`bugfix` 모드에서 재사용. Phase 4 `test_run_executor_kill` 이 실제 업비트 API 로 `config.KRW_RATE` 를 오염시키던 테스트 격리 결함도 해소 (bugfix suite 진입 시 KRW_RATE/SEED 기본값 복원). C1 리팩터 안전망 확보 |
 | 2026-04-22 | [persistence.py](persistence.py), [main.py](main.py), [test.py](test.py) | N1: `init_db()` Supabase→SQLite degraded fallback + `get_fallback_reason()` API. main.py 에서 `[DEGRADED]` 텔레그램 + `DB_FALLBACK` CRITICAL 이벤트 기록. 회귀 테스트 3건 (fallback 발동·사유 노출·sqlite 원시 실패 비삼킴). 운영 단일 장애점 해소 |
@@ -98,7 +99,7 @@ Day 0 (오늘)
  └─ 🤖 N8 테스트 기본 모드 개편 → 커밋 ✅ 2026-04-22 완료
 
 Day 0~1 (병행)
- ├─ 👤 A1b Supabase 프로젝트 + schema.sql 적용
+ ├─ 👤 A1b Supabase 프로젝트 + schema.sql 적용 ✅ 2026-04-23 완료
  └─ 👤 A4 Lightsail 생성 + setup.sh + systemctl start
 
 Day 1~3
@@ -166,7 +167,7 @@ A 와 독립. 로컬 개발 환경에서 진행. **C1 전 반드시 N3+N4 → N1
 - [x] A2: `persistence.py` asyncpg 듀얼 백엔드 (SqliteBackend / SupabaseBackend, async 인터페이스)
 - [x] A3: `config.py` DB_BACKEND·SUPABASE_DB_URL, `.env.example` 갱신, `requirements.txt` asyncpg==0.30.0
 - [x] A5: `deploy/daily30k.service`, `setup.sh`, `update.sh` 작성
-- [ ] **A1b** (사용자, ~15분): https://supabase.com 프로젝트 생성 → SQL Editor 에 `deploy/schema.sql` 붙여넣기 실행 → Settings → Database → Connection pooling(6543) URI 복사 → `.env` `SUPABASE_DB_URL` 기입
+- [x] **A1b** (2026-04-23 완료): Supabase 프로젝트 생성 (서울 리전) + `deploy/schema.sql` 적용 + Pooler(6543) URI `.env` 기입. 로컬 `asyncpg` 검증 (Postgres 17.6, 3 테이블 컬럼 1:1 일치)
 - [ ] **A4** (사용자, ~30분): AWS Lightsail 인스턴스 생성 (서울, $5, Ubuntu 22.04) → SSH 접속 → `bash deploy/setup.sh` 실행 → `.env` 에 Supabase URI·바이낸스 키 입력 → `sudo systemctl start daily30k`
 
 #### 🟡 A 완료 후 진행
@@ -189,6 +190,7 @@ A 와 독립. 로컬 개발 환경에서 진행. **C1 전 반드시 N3+N4 → N1
 
 | 날짜 | ID | 내용 |
 |------|----|------|
+| 2026-04-23 | A1b | 👤 사용자 액션 완료 — Supabase 프로젝트 생성 (서울 리전 `ap-northeast-2`, Free 플랜) → SQL Editor 에 [deploy/schema.sql](deploy/schema.sql) 적용 (멱등 `IF NOT EXISTS`) → **Transaction Pooler (6543 포트)** URI `.env` `SUPABASE_DB_URL` 기입 + `DB_BACKEND=supabase` 전환. 로컬 `asyncpg==0.30.0` 설치 후 검증 스크립트로 Postgres 17.6 접속 확인, 3개 테이블(`trades`/`equity_snapshots`/`bot_events`) 존재·컬럼명·타입 모두 [deploy/schema.sql](deploy/schema.sql) 과 1:1 일치 확인. 운영 DB 블로커 해소 — 남은 사용자 액션은 A4(Lightsail) 1건뿐 |
 | 2026-04-22 | N2 | `persistence.py` — 공개 함수 3개(`record_trade`·`record_equity_snapshot`·`record_event`) 에 `try/except` + `_safe_notify_backend_error` 내장 (notifier 지연 import, notifier 자체 실패 시 `print` fallback 으로 이중 삼킴). 설계 원칙 "기록 실패가 매매 흐름을 차단하지 않음" 을 호출부가 아닌 모듈 자체가 보장. `executor._log_trade`/`_log_event` 및 `main._supervise`/부트 flow 의 persistence 전용 `try/except` 4곳을 dead code 로 간주하고 제거 (`snapshot_equity` 는 `fetch_balance`/`fetch_ticker` 예외도 잡으므로 유지). 회귀 테스트 4건: `test_n2_record_trade_swallows_backend_error`, `test_n2_record_event_swallows_backend_error`, `test_n2_record_equity_snapshot_swallows_backend_error`, `test_n2_notifier_failure_also_swallowed` (`_FailingBackend` + `notifier.notify_error` 몽키패치). Critical 트랙 전량 해소 |
 | 2026-04-22 | N8 | `test.py` — `python test.py` 기본 `unit` 모드에 bugfix+Phase 6/7 suite 통합. 헬퍼 3개 (`_run_phase3`/`_run_phase4`/`_run_bugfix_phase67`) 로 분리 + `unit3`/`unit4`/`bugfix` 모드 하위 호환 유지. Phase 4 `test_run_executor_kill` 이 `update_krw_rate()` 로 실제 업비트 API 를 타서 `config.KRW_RATE` 를 실시간 환율로 덮어쓰던 테스트 격리 결함을 `_run_bugfix_phase67` 진입 시 KRW_RATE/SEED 기본값 복원으로 해소. C1 리팩터 안전망 확보 |
 | 2026-04-22 | N1 | `persistence.py` — `init_db()` Supabase 실패 시 SQLite degraded fallback (`sqlite_fallback` 반환). `_last_fallback_reason` 저장 + `get_fallback_reason()` API. `main.py` — fallback 감지 시 `[DEGRADED]` 텔레그램 + `DB_FALLBACK` CRITICAL 이벤트 기록. 회귀 테스트 3건 (`test_n1_supabase_init_failure_falls_back_to_sqlite`, `test_n1_fallback_reason_exposed_for_alert`, `test_n1_sqlite_native_failure_not_swallowed`). 운영 단일 장애점 해소 — Supabase DNS/Pool/스키마 오류가 봇 기동을 차단하지 않음 |
