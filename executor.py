@@ -32,6 +32,11 @@ from notifier import send, notify_error, notify_trade, notify_daily_stop, notify
 import persistence
 
 
+# binance create_order rate limit: 50 orders / 10s. recover_state 가 다중 자산
+# (특히 testnet 사전 잔고) 정리 시 429 폭주를 막기 위한 매도 간 throttle.
+RECOVER_SELL_THROTTLE_SEC = 0.3
+
+
 async def _log_trade(symbol: str, side: str, qty: float, price: float,
                      fee: float, pnl: float) -> None:
     """체결 1건을 DB 에 비동기 기록. persistence 가 실패 격리를 내장 (N2)."""
@@ -598,8 +603,14 @@ async def recover_state(exchange) -> dict:
             result["liquidated"].append(
                 f"{currency} {sell_qty:.6f}@${fill_price:,.4f}"
             )
+            # N5: 청산 거래도 trades 테이블에 기록 (수수료/손익은 산출 불가 → 0)
+            await _log_trade(symbol, "SELL", sell_qty, fill_price, 0.0, 0.0)
+            # N5b: 다중 자산 청산 시 binance 50 orders/10s 제한 회피
+            await asyncio.sleep(RECOVER_SELL_THROTTLE_SEC)
         except Exception as e:
             await notify_error(f"Recover.sell.{currency}", e)
+            # 실패한 create_order 도 rate window 에 잡히므로 동일하게 throttle
+            await asyncio.sleep(RECOVER_SELL_THROTTLE_SEC)
 
     # 4. 결과 보고
     lines = ["[상태 복구] 재시작 정리 완료",

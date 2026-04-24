@@ -1410,6 +1410,74 @@ def test_n4_recover_state_logs_event():
     print(f"  [PASS] n4_recover_state_event: context keys={list(event[2].keys())}")
 
 
+def test_n5_recover_logs_trade_on_liquidation():
+    """N5: recover_state() 청산 매도가 trades 테이블에 기록된다.
+    감사 권고: emergency 청산도 BUY/SELL 와 동일하게 거래 이력 추적."""
+    import persistence
+    from executor import recover_state
+
+    captured: list[tuple] = []
+    orig = persistence.record_trade
+
+    async def fake(symbol, side, qty, price, fee, pnl, mode, ts=None):
+        captured.append((symbol, side, qty, price, mode))
+
+    persistence.record_trade = fake
+    try:
+        ex = MockExchangeRecovery(
+            balances={"USDT": 500.0, "ETH": 0.5, "BTC": 0.01},
+            tickers={"ETH/USDT": 2000.0, "BTC/USDT": 50000.0},
+        )
+        asyncio.run(recover_state(ex))
+    finally:
+        persistence.record_trade = orig
+
+    assert len(captured) == 2, f"청산 trade 기록 누락: {captured}"
+    sides = {c[1] for c in captured}
+    assert sides == {"SELL"}, f"청산 trade side 오류: {sides}"
+    symbols = {c[0] for c in captured}
+    assert symbols == {"ETH/USDT", "BTC/USDT"}, (
+        f"예상 심볼 누락: {symbols}"
+    )
+    print(f"  [PASS] n5_recover_logs_trade: {len(captured)}건 SELL 기록 "
+          f"({symbols})")
+
+
+def test_n5b_recover_throttles_between_sells():
+    """N5b: recover_state() 매도 사이에 throttle(asyncio.sleep) 호출.
+    binance 50 orders/10s 제한 회피 — testnet 사전 잔고 다중 청산 시 429 폭주 방지."""
+    import executor as executor_mod
+    from executor import recover_state, RECOVER_SELL_THROTTLE_SEC
+
+    sleep_durations: list[float] = []
+    orig_sleep = executor_mod.asyncio.sleep
+
+    async def fake_sleep(seconds):
+        sleep_durations.append(seconds)
+        # 실제로 sleep 안 함 — 테스트 빠르게 끝내려고
+
+    executor_mod.asyncio.sleep = fake_sleep
+    try:
+        ex = MockExchangeRecovery(
+            balances={"USDT": 100.0, "ETH": 0.5, "BTC": 0.01, "SOL": 0.2},
+            tickers={"ETH/USDT": 2000.0, "BTC/USDT": 50000.0,
+                     "SOL/USDT": 100.0},
+        )
+        asyncio.run(recover_state(ex))
+    finally:
+        executor_mod.asyncio.sleep = orig_sleep
+
+    throttle_calls = [s for s in sleep_durations
+                      if s == RECOVER_SELL_THROTTLE_SEC]
+    # 3건 매도 → throttle 호출 최소 3회
+    assert len(throttle_calls) >= 3, (
+        f"throttle 호출 부족 ({RECOVER_SELL_THROTTLE_SEC}s): "
+        f"{throttle_calls} (전체 sleep: {sleep_durations})"
+    )
+    print(f"  [PASS] n5b_recover_throttles: {len(throttle_calls)}회 throttle "
+          f"@{RECOVER_SELL_THROTTLE_SEC}s")
+
+
 def test_record_trade_hook_called_on_sell():
     """매도 체결 시 persistence.record_trade(async) 가 호출되는지 (SELL + mode 전달)."""
     from executor import GridEngine
@@ -1791,6 +1859,8 @@ if __name__ == "__main__":
         test_n3_snapshot_equity_records_positions()
         test_n4_market_filter_logs_transition_event()
         test_n4_recover_state_logs_event()
+        test_n5_recover_logs_trade_on_liquidation()
+        test_n5b_recover_throttles_between_sells()
         print("Phase 7 N 트랙 단위 테스트 통과!")
 
         print("\n=== Phase 7: N1 Supabase → SQLite fallback ===")

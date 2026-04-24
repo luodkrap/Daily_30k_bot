@@ -35,7 +35,7 @@
 
 ## 진행 중 (In Progress)
 
-없음 (🤖 다음 진입: N5 — `recover_state()` 시장가 청산 후 `_log_trade()` 호출 추가)
+없음 (🤖 다음 진입: N6 — CLAUDE.md 시장가 예외 조항 명시 / 또는 N7 — SupabaseBackend 테스트 4건)
 
 ## 남은 작업 (Backlog)
 
@@ -82,7 +82,7 @@
 - [x] C3: `check_stop_loss()` + `emergency_sell()` 매수 수수료 누락 → 킬 스위치 지연
 - [x] C4: 리그리딩 트리거 `not engine.buy_orders` 조건 누락 → 이중 포지션 위험
 - [x] C1: `setup_grid()` 시장가 매수 → 지정가로 교체 (CLAUDE.md 원칙 위반)
-- [x] C2: 재시작 시 포지션·주문 상태 복구 로직 없음 → 이중 포지션 위험 (실전 투입 블로커) (2026-04-21 `recover_state()` 전량정리 방식 — 미체결 주문 취소 + 비-USDT 포지션 시장가 매도, dust 스킵) **⚠ 2026-04-22 감사: 청산 체결이 `_log_trade()` 에 기록 안 됨 → N5 에서 보완**
+- [x] C2: 재시작 시 포지션·주문 상태 복구 로직 없음 → 이중 포지션 위험 (실전 투입 블로커) (2026-04-21 `recover_state()` 전량정리 방식 — 미체결 주문 취소 + 비-USDT 포지션 시장가 매도, dust 스킵) **✅ 2026-04-25 N5/N5b 보완: `_log_trade` 기록 + 매도간 0.3s throttle (429 회피)**
 
 **높은 우선순위 (High) — 실전 투입 전 해결**
 
@@ -119,7 +119,8 @@
 
 - [x] 🤖 N3: `snapshot_equity()` 헬퍼 추가 + `run_executor` 30분 타이머 편승 (2026-04-22 `update_krw_rate` 다음에 잔고+포지션 평가액 스냅샷 기록)
 - [x] 🤖 N4: `_log_event()` 헬퍼 + 6개 지점에 호출 주입 (2026-04-22 EXECUTOR_START · KILL_SWITCH · DAILY_STOP · MARKET_FILTER 전환 · RECOVER_STATE 완료/실패 · SUPERVISOR_RESTART)
-- [ ] 🤖 N5: `executor.py:536-550` `recover_state()` 청산이 `_log_trade()` 미호출 → 재시작 청산 손익 DB 누락
+- [x] 🤖 N5 (2026-04-25 완료): `recover_state()` 매도 루프에 `_log_trade("SELL", ...)` 호출 추가 — 청산 거래도 `trades` 테이블에 기록 (수수료/PnL 산출 불가 → 0). 회귀 테스트 1건 (`test_n5_recover_logs_trade_on_liquidation`)
+- [x] 🤖 N5b (2026-04-25 완료): `recover_state()` 매도 사이 `RECOVER_SELL_THROTTLE_SEC=0.3` sleep 추가 — binance 50 orders/10s 제한 회피. testnet 사전 잔고 다중 청산 시 429 폭주로 봇 부팅 실패 결함을 해소. 회귀 테스트 1건 (`test_n5b_recover_throttles_between_sells`). 사용자 A4 진행 중 발견된 testnet 환경 특이점 대응
 - [ ] 🤖 N6: CLAUDE.md "모든 주문: 지정가 우선" 원칙과 손절·긴급매도·recover 청산의 시장가 사용 충돌 → 예외 조항 명시
 - [ ] 🤖 N7: `SupabaseBackend` 관련 테스트 전무 → `MockAsyncpgPool`로 init 실패 / write 실패 / timeout / fallback 동작 4건
 
