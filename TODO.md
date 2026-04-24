@@ -35,7 +35,7 @@
 
 ## 진행 중 (In Progress)
 
-없음 (🤖 다음 진입: N6 — CLAUDE.md 시장가 예외 조항 명시 / 또는 N7 — SupabaseBackend 테스트 4건)
+없음 (🤖 다음 진입 후보: **R1** — `/status` 누적 손익 포함 (B3 판단 지원, 권장) / N6 — CLAUDE.md 시장가 예외 조항 / N7 — SupabaseBackend 테스트 4건)
 
 ## 남은 작업 (Backlog)
 
@@ -136,6 +136,19 @@
 - [ ] 🤖 N12: `deploy/daily30k.service` 로그 rotate 미설정 → `/etc/logrotate.d/daily30k` 추가 또는 journald 전환
 - [ ] 🤖 N13: `executor.py:282-299` `monitor_orders` 단일 주문 실패가 사이클 중단 → 체결 핸들러 개별 try-except
 - [ ] 🤖 N14: `main.py:125-141` `_supervise` `max_restarts` 초과 시 `kill_event.set()` 호출 검증 테스트 없음
+
+### 🤖 리포팅·모니터링 기능 (2026-04-25 추가) — B3 판단 지원
+
+> 테스트넷 페이퍼 트레이딩 가동(2026-04-25) 이후 실제 운영 경험에서 도출 — 현재 `/status` 는 메모리 `daily_pnl` 만 보여주고 누적/추세/리스크 지표는 Supabase SQL 수동 조회만 가능. B3 (~2026-05-09 전후 live 전환 판단) 이 다가오기 전에 핵심 지표를 텔레그램에서 바로 확인할 수 있어야 한다.
+
+**중간 (Medium) — B3 판단 전에 적어도 R1은 필수**
+
+- [ ] 🤖 R1: `/status` 응답에 **누적 손익** 포함 → `notify_status()` 에서 Supabase `trades` 테이블 `SUM(pnl)` 쿼리 (현재 mode 기준) 추가. 일일/누적 병행 표시. `persistence.get_total_pnl(mode)` 헬퍼 신설. 회귀 테스트 1건
+- [ ] 🤖 R2: 자동 일간/주간 손익 리포트 텔레그램 발송 → `main.py` 에 `run_reporter()` 컴포넌트 추가 (asyncio.gather 4번째 태스크). 매일 자정 KST + 매주 월요일 오전 9시 발송. 포함 필드: 기간 손익·거래 횟수·승률·최대 낙폭·평균 건당 손익. 중복 방지용 `last_report_date` 상태 저장
+
+**중간-높음 (Medium-High) — B3 시점에 있으면 강력**
+
+- [ ] 🤖 R3: B3 판단용 **분석 대시보드** → `reports/summary.py` 모듈 신설. CLI 도구 (`python -m reports.summary --mode testnet --period 7d`) 로 승률·평균 손익·최대 낙폭(MDD)·샤프 비율·일별 손익 히트맵 출력. `equity_snapshots` + `trades` 조인 기반. R2 자동 리포트의 출력부로 재사용 가능하도록 함수 분리
 
 ### Phase 6 — 검증
 

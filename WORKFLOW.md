@@ -9,7 +9,7 @@
 
 | 항목 | 값 |
 |------|----|
-| **현재 Phase** | **Phase 7 운영 진입 — 페이퍼 트레이딩 가동 중**. A4/B1/B2 모두 완료(2026-04-25, Lightsail `3.36.26.177` testnet 기동, recover 13건 청산 성공). N3+N4·N1·N8·N2·N5·N5b 완료, Critical+High Top 5 해소. 다음은 1~2주 페이퍼 누적 후 B3 판단, 또는 🤖 N6/N7/N9~N14 잔여 |
+| **현재 Phase** | **Phase 7 운영 진입 — 페이퍼 트레이딩 가동 중**. A4/B1/B2 모두 완료(2026-04-25, Lightsail `3.36.26.177` testnet 기동, recover 13건 청산 성공). N3+N4·N1·N8·N2·N5·N5b 완료, Critical+High Top 5 해소. 다음은 🤖 R1→R2 (B3 판단 지원 리포팅) 또는 🤖 N6/N7/N9~N14 잔여. Day ~14 에 R3 + 👤 B3 판단 |
 | **마지막 점검** | 2026-04-22 (project-auditor 전체 감사 — A 트랙 + Phase 6 + 버그픽스 누적 반영) |
 | **점검 누적** | 3/3 |
 | **남은 블로커** | 없음 — testnet 페이퍼 가동 정상 (recover_state 정상 진입, 스캐너 환율 갱신 확인) |
@@ -110,10 +110,12 @@ Day 1~3
  └─ 👤 B2 testnet 부팅 + recover_state 13건 청산 ✅ 2026-04-25 완료
 
 Day 3~10 (1~2주 페이퍼 방치)
+ ├─ 🤖 R1·R2 (리포팅 — B3 판단 전 필수)
  ├─ 🤖 N9·N10·N12·N13·N14·B7 (Medium/Low 소화)
  └─ 🤖 C 트랙 (C1~C4 백테스트 엔진) 진행 가능
 
 Day ~14
+ ├─ 🤖 R3 (B3 직전 분석 대시보드)
  └─ 👤 B3 누적 손익 검토 → MODE=live 전환 판단
 ```
 
@@ -147,6 +149,16 @@ Day ~14
 - [ ] N13: [executor.py:282-299](executor.py#L282-L299) `monitor_orders` 체결 핸들러 개별 try-except (단일 주문 실패 격리)
 - [ ] N14: [main.py:125-141](main.py#L125-L141) `_supervise` `max_restarts` 초과 시 `kill_event.set()` 검증 테스트
 - [ ] B7: 캔들 수집 실패 감지 — 무음 처리되는 API 오류 누적 시 실패율 임계치 넘으면 알림 (screener.py)
+
+---
+
+### 🤖 Claude 트랙 (R 트랙 — 리포팅·모니터링) `B3 판단 지원 · 2026-04-25 추가`
+
+> testnet 페이퍼 가동 이후 도출. 현재 `/status` 는 메모리 `daily_pnl` 만 보여주고 누적 손익·추세·리스크 지표는 Supabase SQL 수동 조회만 가능. B3 전환 판단일 (~2026-05-09 전후) 전에 적어도 **R1** 은 필수.
+
+- [ ] R1: `/status` 응답에 **누적 손익** 포함 — `notify_status()` 에서 Supabase `trades` `SUM(pnl)` 조회 추가. `persistence.get_total_pnl(mode)` 헬퍼 신설 + 회귀 테스트 1건
+- [ ] R2: 일간/주간 손익 리포트 **자동 텔레그램 발송** — `run_reporter()` 컴포넌트 신설 (asyncio.gather 4번째 태스크). 자정 KST + 매주 월 오전 9시 발송. 손익·승률·MDD·평균 손익 포함
+- [ ] R3: B3 판단용 **분석 대시보드** — `reports/summary.py` CLI (`python -m reports.summary --mode testnet --period 7d`) 승률·평균 손익·MDD·샤프비·일별 히트맵. `equity_snapshots` + `trades` 조인 기반. R2 출력부로 재사용
 
 ---
 
