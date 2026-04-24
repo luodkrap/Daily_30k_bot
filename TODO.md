@@ -12,12 +12,12 @@
 ### 🟢 지금 즉시 병행 가능
 
 - [x] **A1b** (2026-04-23 완료): Supabase 프로젝트 생성 (서울 리전) + `deploy/schema.sql` 적용 + Pooler(6543) URI `.env` 기입. 로컬 `asyncpg` 검증 통과 — Postgres 17.6 연결 OK, 3개 테이블 컬럼·타입 1:1 일치
-- [ ] **A4** (~30분): AWS Lightsail 인스턴스 생성 (서울, $5 플랜, Ubuntu 22.04) → SSH 접속 → `bash deploy/setup.sh` 실행 → `.env` 에 Supabase URI·바이낸스 키 입력 → `sudo systemctl start daily30k`
+- [x] **A4** (2026-04-25 완료): AWS Lightsail $7 플랜 (서울, 1GB RAM, Ubuntu 22.04, IP `3.36.26.177`) → repo 클론 (`luodkrap/Daily_30k_bot` public 전환) → `bash deploy/setup.sh` 통과 → `.env` 작성 (testnet 키 + Supabase Pooler URI 적용) → `sudo systemctl start daily30k` 정상 기동. 첫 부팅에서 testnet 사전 잔고 다중 청산이 binance 429 폭주로 실패 → N5b throttle 코드 패치 후 `update.sh` 재반영 → 13건 청산 성공
 
 ### 🟡 A1b + A4 완료 후
 
-- [ ] **B1**: https://testnet.binance.vision 가입 → HMAC API 키 발급 → 서버 `.env` 에 `MODE=testnet` + `BINANCE_TESTNET_API_KEY` + `BINANCE_TESTNET_SECRET_KEY` 기재
-- [ ] **B2**: `sudo systemctl restart daily30k` → 텔레그램 부팅 메시지 `[MODE=TESTNET]` 확인 + Supabase 대시보드 `trades` 테이블 행 증가 검증
+- [x] **B1** (2026-04-25 완료): https://testnet.binance.vision HMAC API 키 발급 (`CoinTradingBot`, TRADE/USER_DATA/USER_STREAM 권한) → 서버 `.env` `MODE=testnet` + `BINANCE_TESTNET_API_KEY/SECRET_KEY` 기재 (chmod 600)
+- [x] **B2** (2026-04-25 완료): A4 마지막 단계와 동시 검증 — 텔레그램 부팅 메시지 `[MODE=TESTNET]` 확인 + N5b 패치 후 testnet 사전 잔고 13개 청산이 Supabase `trades` 테이블에 기록됨
 
 ### 🔴 1~2주 페이퍼 누적 후
 

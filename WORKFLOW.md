@@ -9,10 +9,10 @@
 
 | 항목 | 값 |
 |------|----|
-| **현재 Phase** | Phase 7 감사 후 보완 중 — A 트랙 코드 완료, N3+N4·N1·N8·N2 완료(2026-04-22), **A1b 완료(2026-04-23), N5+N5b 완료(2026-04-25)**. Critical+High Top 우선 해소. 다음은 👤 A4 마무리(testnet `Apply settings: None` + `update.sh`) 또는 🤖 N6/N7 |
+| **현재 Phase** | **Phase 7 운영 진입 — 페이퍼 트레이딩 가동 중**. A4/B1/B2 모두 완료(2026-04-25, Lightsail `3.36.26.177` testnet 기동, recover 13건 청산 성공). N3+N4·N1·N8·N2·N5·N5b 완료, Critical+High Top 5 해소. 다음은 1~2주 페이퍼 누적 후 B3 판단, 또는 🤖 N6/N7/N9~N14 잔여 |
 | **마지막 점검** | 2026-04-22 (project-auditor 전체 감사 — A 트랙 + Phase 6 + 버그픽스 누적 반영) |
 | **점검 누적** | 3/3 |
-| **남은 블로커** | 없음 — Supabase 운영 DB 검증 완료 (Postgres 17.6, 3 테이블 컬럼 1:1 일치) |
+| **남은 블로커** | 없음 — testnet 페이퍼 가동 정상 (recover_state 정상 진입, 스캐너 환율 갱신 확인) |
 | **테스트 상태** | 전체 통과 (`python test.py` 기본 실행으로 Phase 3/4 + bugfix + Phase 6/7 전부 커버, 신규 N5/N5b 2건 포함) |
 | **로드맵 플랜** | `~/.claude/plans/streamed-launching-cascade.md` (2026-04-22 승인 — 역할 분담·타임라인) |
 
@@ -61,6 +61,7 @@ python main.py
 
 | 날짜 | 파일 | 변경 이유 |
 |------|------|-----------|
+| 2026-04-25 | [TODO.md](TODO.md), [WORKFLOW.md](WORKFLOW.md) | A4+B1+B2 완료 처리. Lightsail $7 (서울, IP `3.36.26.177`) 페이퍼 트레이딩 가동 시작 — N5b throttle 패치 적용 후 recover_state 가 testnet 사전 잔고 13개(WAN/FUN/MDT/FIO/OXT/UTK/DEXE/GMT/BIFI/JUP/VANA/SOPH/AT) 정상 청산 → 봇 메인 루프 진입 (스캐너 환율 갱신 확인). 운영 인프라 100% 완성 |
 | 2026-04-25 | [executor.py](executor.py), [test.py](test.py) | N5+N5b: `recover_state()` 매도 루프에 (1) `_log_trade("SELL", ...)` 호출 추가 — 청산 거래도 `trades` 테이블에 기록 (수수료/PnL 산출 불가 → 0); (2) `RECOVER_SELL_THROTTLE_SEC=0.3` sleep 추가 — binance 50 orders/10s 제한 회피. 회귀 테스트 2건 (`test_n5_recover_logs_trade_on_liquidation`, `test_n5b_recover_throttles_between_sells`). 사용자 A4 첫 부팅 시 testnet 사전 잔고 다중 청산이 429 폭주로 실패하던 환경 특이점 해소 |
 | 2026-04-23 | [.env](.env), [TODO.md](TODO.md), [WORKFLOW.md](WORKFLOW.md) | A1b (사용자 액션): Supabase 프로젝트 생성 (서울 리전, Free 플랜) → `deploy/schema.sql` 적용 → Transaction Pooler(6543) URI `.env` `SUPABASE_DB_URL` 기입. 로컬 `asyncpg` 검증: Postgres 17.6 연결·3개 테이블(`trades`/`equity_snapshots`/`bot_events`) 존재·컬럼·타입 `schema.sql` 과 1:1 일치 확인. 운영 DB 블로커 해소, A4(Lightsail) 만 남음 |
 | 2026-04-22 | [persistence.py](persistence.py), [executor.py](executor.py), [main.py](main.py), [test.py](test.py) | N2: `persistence` 공개 함수 3개(`record_trade`/`record_equity_snapshot`/`record_event`) 자체 try-except + `_safe_notify_backend_error` 헬퍼(notifier 지연 import + 이중 장애 stderr fallback). 설계 원칙 "기록 실패가 매매 흐름을 차단하지 않음"을 모듈 자체가 보장. `executor._log_trade`/`_log_event` 와 `main._supervise`/부트 flow 의 dead try-except 제거. 회귀 테스트 4건 (trade/event/equity write 실패 삼킴 + notifier 이중 장애 삼킴) |
@@ -101,12 +102,12 @@ Day 0 (오늘)
 
 Day 0~1 (병행)
  ├─ 👤 A1b Supabase 프로젝트 + schema.sql 적용 ✅ 2026-04-23 완료
- └─ 👤 A4 Lightsail 생성 + setup.sh + systemctl start (2026-04-25 진행 중 — testnet 첫 부팅에서 N5b 결함 발견 → 코드 수정 후 `update.sh` 재반영 단계)
+ └─ 👤 A4 Lightsail 생성 + setup.sh + systemctl start ✅ 2026-04-25 완료
 
 Day 1~3
  ├─ 🤖 N2·N5·N5b ✅ 완료 / N6·N7 잔여
  ├─ 👤 B1 testnet 키 발급 ✅ 2026-04-25 완료 (`CoinTradingBot` HMAC 키)
- └─ 👤 B2 Supabase `trades` 행 증가 확인 — A4 마무리 후
+ └─ 👤 B2 testnet 부팅 + recover_state 13건 청산 ✅ 2026-04-25 완료
 
 Day 3~10 (1~2주 페이퍼 방치)
  ├─ 🤖 N9·N10·N12·N13·N14·B7 (Medium/Low 소화)
@@ -192,6 +193,7 @@ A 와 독립. 로컬 개발 환경에서 진행. **C1 전 반드시 N3+N4 → N1
 
 | 날짜 | ID | 내용 |
 |------|----|------|
+| 2026-04-25 | A4+B1+B2 | 👤 사용자 액션 완료 — AWS Lightsail $7 플랜 (서울 `ap-northeast-2`, 1GB RAM, Ubuntu 22.04, IP `3.36.26.177`) 인스턴스 생성. 본인 GitHub repo `luodkrap/Daily_30k_bot` public 전환 후 `git clone` → `bash deploy/setup.sh` 통과 (Python 3.11 + venv + requirements + systemd unit). testnet HMAC 키 발급 (`CoinTradingBot`, TRADE/USER_DATA/USER_STREAM 권한) → `.env` 작성 (chmod 600) → `systemctl start daily30k`. 첫 부팅에서 testnet 사전 잔고 다중 청산이 binance 429 폭주로 실패 → **N5b throttle 패치 후 `bash deploy/update.sh` 재반영** → 13건(WAN/FUN/MDT/FIO/OXT/UTK/DEXE/GMT/BIFI/JUP/VANA/SOPH/AT) 정상 청산 + dust/fiat 스킵 + 환율 갱신까지 정상 진입. 페이퍼 트레이딩 1~2주 누적 단계 진입 (B3 시점에 live 전환 판단) |
 | 2026-04-25 | N5+N5b | `executor.py` `recover_state()` 매도 루프 보강 — (1) **N5**: 청산 매도 직후 `_log_trade(symbol, "SELL", sell_qty, fill_price, 0.0, 0.0)` 호출 추가. emergency 청산은 평균매수가/수수료 정보 없으므로 fee/pnl 0.0 으로 기록. (2) **N5b**: 매도 try 블록 끝과 except 블록 양쪽에 `await asyncio.sleep(RECOVER_SELL_THROTTLE_SEC=0.3)` 추가 — binance create_order rate limit (50/10s) 회피. 모듈 상단에 throttle 상수 분리. 회귀 테스트 2건 (`test_n5_recover_logs_trade_on_liquidation`: 2개 자산 청산 시 SELL 2건 기록 검증; `test_n5b_recover_throttles_between_sells`: `executor_mod.asyncio.sleep` 몽키패치로 0.3s sleep 호출 횟수 ≥3 검증). 사용자 A4 첫 부팅 시 testnet 사전 잔고 (WBTC/DEXE/GMT/JUP 등) 다중 청산이 429 폭주로 RECOVER_STATE 절반 실패하던 환경 특이점 해소 |
 | 2026-04-23 | A1b | 👤 사용자 액션 완료 — Supabase 프로젝트 생성 (서울 리전 `ap-northeast-2`, Free 플랜) → SQL Editor 에 [deploy/schema.sql](deploy/schema.sql) 적용 (멱등 `IF NOT EXISTS`) → **Transaction Pooler (6543 포트)** URI `.env` `SUPABASE_DB_URL` 기입 + `DB_BACKEND=supabase` 전환. 로컬 `asyncpg==0.30.0` 설치 후 검증 스크립트로 Postgres 17.6 접속 확인, 3개 테이블(`trades`/`equity_snapshots`/`bot_events`) 존재·컬럼명·타입 모두 [deploy/schema.sql](deploy/schema.sql) 과 1:1 일치 확인. 운영 DB 블로커 해소 — 남은 사용자 액션은 A4(Lightsail) 1건뿐 |
 | 2026-04-22 | N2 | `persistence.py` — 공개 함수 3개(`record_trade`·`record_equity_snapshot`·`record_event`) 에 `try/except` + `_safe_notify_backend_error` 내장 (notifier 지연 import, notifier 자체 실패 시 `print` fallback 으로 이중 삼킴). 설계 원칙 "기록 실패가 매매 흐름을 차단하지 않음" 을 호출부가 아닌 모듈 자체가 보장. `executor._log_trade`/`_log_event` 및 `main._supervise`/부트 flow 의 persistence 전용 `try/except` 4곳을 dead code 로 간주하고 제거 (`snapshot_equity` 는 `fetch_balance`/`fetch_ticker` 예외도 잡으므로 유지). 회귀 테스트 4건: `test_n2_record_trade_swallows_backend_error`, `test_n2_record_event_swallows_backend_error`, `test_n2_record_equity_snapshot_swallows_backend_error`, `test_n2_notifier_failure_also_swallowed` (`_FailingBackend` + `notifier.notify_error` 몽키패치). Critical 트랙 전량 해소 |
