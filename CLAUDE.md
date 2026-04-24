@@ -28,6 +28,7 @@
 - 자동 점검 규칙 (트리거·명령) → [skills/auto-checkpoint.md](skills/auto-checkpoint.md)
 - 문서화 규칙 (PROJECT/TODO/WORKFLOW 갱신 규칙) → [skills/documentation-rules.md](skills/documentation-rules.md)
 - 확정 아키텍처·컨벤션 (반복 질문 방지) → [skills/conventions.md](skills/conventions.md)
+- 배포 가이드 규칙 (코드 변경 후 Lightsail 반영 단계 안내) → [skills/deploy-advisor.md](skills/deploy-advisor.md)
 
 ## 개발 환경
 

@@ -150,6 +150,13 @@
 
 - [ ] 🤖 R3: B3 판단용 **분석 대시보드** → `reports/summary.py` 모듈 신설. CLI 도구 (`python -m reports.summary --mode testnet --period 7d`) 로 승률·평균 손익·최대 낙폭(MDD)·샤프 비율·일별 손익 히트맵 출력. `equity_snapshots` + `trades` 조인 기반. R2 자동 리포트의 출력부로 재사용 가능하도록 함수 분리
 
+### 🤖 운영 자동화 (2026-04-25 추가) — 배포 실수 방지
+
+> 페이퍼 운영 중 코드 변경을 Lightsail 에 반영할 때 `update.sh` 만으로는 누락되는 단계(.env 수동 추가 / Supabase ALTER TABLE 선행 / daemon-reload / 매매 로직 재시작 타이밍)가 있어 자동 안내 시스템 구축.
+
+- [x] 🤖 OPS1 (2026-04-25 완료): [deploy/advise.sh](deploy/advise.sh) 진단 엔진 + [skills/deploy-advisor.md](skills/deploy-advisor.md) Claude 규칙. 변경 파일 유형별로 🔴 BEFORE DEPLOY (schema) / 🟠 ENV UPDATE / 🟠 SYSTEMD RELOAD / 🟡 TIMING WARNING / 🟢 AUTO / 🟢 STANDARD 6 등급 가이드 출력. `--files` `--since=` `unpushed` 3가지 모드. 6개 테스트 케이스 수동 검증 통과. [CLAUDE.md](CLAUDE.md) 온디맨드 스킬 섹션에 참조 추가
+- [x] 🤖 OPS1b (2026-04-25 완료): **배포 필요성 판정** 추가 — `classify_file()` 헬퍼가 파일을 skip(문서/스킬) / optional(도구·.env.example·test.py) / required(런타임 Python·systemd·schema) 3등급 분류 → 최상단 🚨/🟢/🔘 배지 + 파일별 태그 + 상태별 말미 명령 분기. skills 제외 조건 삭제(판정은 스크립트 전담). "배포해야 하나?" 의문 자동 해소. 4개 케이스 검증 통과
+
 ### Phase 6 — 검증
 
 - [~] 페이퍼 트레이딩 — 인프라 완료 (2026-04-21 MODE=live/testnet 분기 + testnet 키 분리 + `set_sandbox_mode` + SQLite `trades.db` 체결 로그). 실연결 검증은 A 트랙 완료 후 B 트랙으로 진행.
