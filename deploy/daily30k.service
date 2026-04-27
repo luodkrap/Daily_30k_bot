@@ -8,6 +8,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/Daily_30k_bot
 EnvironmentFile=/home/ubuntu/Daily_30k_bot/.env
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/ubuntu/Daily_30k_bot/venv/bin/python main.py
 Restart=on-failure
 RestartSec=10
