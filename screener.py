@@ -77,37 +77,28 @@ async def _scan(exchange: ccxt_async.binance) -> list[dict]:
     """바이낸스 전 종목 스캔 후 필터링·점수 계산된 후보 리스트 반환."""
     # 1단계: 전체 티커 수신 (1회 API 호출)
     tickers = await exchange.fetch_tickers()
-    print(f"[Screener-Diag] 전체 티커: {len(tickers)}개")  # DIAG1 (임시)
 
     # 2단계: CPU 사전 필터 (USDT 페어, 스테이블/레버리지 제거, $100M, 최소 가격)
     symbols = _pre_filter(tickers)
-    print(f"[Screener-Diag] 사전 필터 통과: {len(symbols)}개")  # DIAG1 (임시)
     if not symbols:
         return []
 
     # 3단계: 병렬 캔들 수집
     candle_map = await _fetch_candles_bulk(symbols, exchange)
-    print(f"[Screener-Diag] 캔들 수집 성공: {len(candle_map)}/{len(symbols)}개")  # DIAG1 (임시)
 
     # 4단계: ATR + 펌프앤덤프 필터 적용
     passed = []
-    cuts = {"price_zero": 0, "atr_out": 0, "pumped": 0}  # DIAG1 (임시)
-    atr_samples = []  # DIAG1 (임시) — ATR 분포 확인용
     for symbol, ohlcv in candle_map.items():
         price = ohlcv[-1][4]  # 마지막 캔들 종가
         if price <= 0:
-            cuts["price_zero"] += 1
             continue
 
         atr = _calc_atr(ohlcv)
         atr_rate = atr / price
-        atr_samples.append((symbol, atr_rate))  # DIAG1
 
         if not (ATR_MIN_RATE <= atr_rate <= ATR_MAX_RATE):
-            cuts["atr_out"] += 1
             continue
         if _is_pumped(ohlcv):
-            cuts["pumped"] += 1
             continue
 
         passed.append({
@@ -117,14 +108,6 @@ async def _scan(exchange: ccxt_async.binance) -> list[dict]:
             "last":     price,
             "ohlcv":    ohlcv,
         })
-
-    # DIAG1 (임시): 컷 분포 + ATR 샘플 5개 (가장 가까운 통과선 근처)
-    print(f"[Screener-Diag] ATR/펌프 컷: {cuts}, 통과: {len(passed)}개")
-    if atr_samples and not passed:
-        atr_samples.sort(key=lambda x: abs(x[1] - (ATR_MIN_RATE + ATR_MAX_RATE) / 2))
-        sample = ", ".join(f"{s}={r*100:.2f}%" for s, r in atr_samples[:5])
-        print(f"[Screener-Diag] ATR 샘플 (중앙값 근처 5개, 허용범위 "
-              f"{ATR_MIN_RATE*100:.1f}%~{ATR_MAX_RATE*100:.1f}%): {sample}")
 
     if not passed:
         return []
@@ -138,53 +121,35 @@ async def _scan(exchange: ccxt_async.binance) -> list[dict]:
 def _pre_filter(tickers: dict) -> list[str]:
     """CPU 사전 필터 — API 호출 없이 심볼 목록을 대폭 축소."""
     result = []
-    cuts = {"non_usdt": 0, "stablecoin": 0, "leverage": 0,
-            "low_volume": 0, "no_price": 0, "low_price": 0}  # DIAG1 (임시)
-    usdt_volumes = []  # DIAG1 — USDT 페어 거래량 분포 샘플
     for symbol, ticker in tickers.items():
         # USDT 페어만
         if not symbol.endswith("/USDT"):
-            cuts["non_usdt"] += 1
             continue
 
         # 스테이블코인 제외
         base = symbol.split("/")[0]
         if base in _STABLECOINS:
-            cuts["stablecoin"] += 1
             continue
 
         # 레버리지 토큰 제외 (base 코인 suffix 기준)
         if any(base.endswith(kw) for kw in _LEVERAGE_KEYWORDS):
-            cuts["leverage"] += 1
             continue
 
         # 거래량 $100M 이상
         volume = ticker.get("quoteVolume") or 0
-        usdt_volumes.append((symbol, volume))  # DIAG1
         if volume < MIN_VOLUME_USD:
-            cuts["low_volume"] += 1
             continue
 
         # 현재가 유효성
         last = ticker.get("last") or 0
         if last <= 0:
-            cuts["no_price"] += 1
             continue
 
         # 최소 가격 필터 — $0.10 미만 저가 코인은 그리드 매매 부적합
         if last < MIN_PRICE_USD:
-            cuts["low_price"] += 1
             continue
 
         result.append(symbol)
-
-    # DIAG1 (임시): 컷 분포 + 거래량 상위 5개 (MIN_VOLUME_USD 와 비교)
-    print(f"[Screener-Diag] _pre_filter 컷: {cuts}")
-    if usdt_volumes and not result:
-        usdt_volumes.sort(key=lambda x: x[1], reverse=True)
-        top = ", ".join(f"{s}=${v:,.0f}" for s, v in usdt_volumes[:5])
-        print(f"[Screener-Diag] USDT 페어 거래량 Top5 "
-              f"(MIN_VOLUME_USD=${MIN_VOLUME_USD:,.0f}): {top}")
     return result
 
 

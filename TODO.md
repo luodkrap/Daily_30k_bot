@@ -35,7 +35,7 @@
 
 ## 진행 중 (In Progress)
 
-없음 (🤖 다음 진입 후보: **R1** — `/status` 누적 손익 포함 (B3 판단 지원, 권장) / N6 — CLAUDE.md 시장가 예외 조항 / N7 — SupabaseBackend 테스트 4건)
+없음 (🤖 다음 진입 후보: **R1** — `/status` 누적 손익 포함 (B3 판단 지원, 권장) / **N15** — BUY 행 pnl 음수 기록 결함 (testnet 데이터로 신규 발견) / N6 — CLAUDE.md 시장가 예외 조항 / N7 — SupabaseBackend 테스트 4건)
 
 ## 남은 작업 (Backlog)
 
@@ -136,6 +136,13 @@
 - [ ] 🤖 N12: `deploy/daily30k.service` 로그 rotate 미설정 → `/etc/logrotate.d/daily30k` 추가 또는 journald 전환
 - [ ] 🤖 N13: `executor.py:282-299` `monitor_orders` 단일 주문 실패가 사이클 중단 → 체결 핸들러 개별 try-except
 - [ ] 🤖 N14: `main.py:125-141` `_supervise` `max_restarts` 초과 시 `kill_event.set()` 호출 검증 테스트 없음
+
+**페이퍼 운영 중 발견 (2026-04-28 D1 완료 후 추가)**
+
+- [ ] 🤖 **N15** (Medium): BUY 행 pnl 이 -149원 등 음수로 기록됨 (Supabase trades 확인). 매수는 PnL 0이 정상. `_handle_buy_fill` 또는 `setup_grid` 의 `_log_trade("BUY", ...)` 호출부에서 잘못된 인자 전달 의심. 회귀 테스트 1건 + 호출부 점검
+- [ ] 🤖 N16 (Low): `recover_state` WBTC 등 일부 자산 청산 시 `MARKET_LOT_SIZE` 필터 위반 → `amount_to_precision` 적용 후에도 stepSize 미정렬. testnet 일부 페어 LOT_SIZE 정밀도 추가 처리
+- [ ] 🤖 N17 (Low): `recover_state` `fetch_open_orders` symbol 미지정 호출 시 ccxt 경고 (rate limit 10배). symbol 별 순회 또는 `warnOnFetchOpenOrdersWithoutSymbol=False` 설정
+- [ ] 🤖 **N18** (Medium): 페이퍼 운영 중 testnet 작은 손실로도 `RECENT_LOSS_STREAK` 발동 → `is_market_healthy=False` 신규 진입 차단. 회복 조건(현재 없음 — 일일 리셋만) 추가 또는 testnet 모드 임계값 완화 검토. B3 판단 데이터 누적에 직접 영향
 
 ### 🤖 리포팅·모니터링 기능 (2026-04-25 추가) — B3 판단 지원
 
