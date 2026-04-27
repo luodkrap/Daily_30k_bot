@@ -60,7 +60,10 @@ STOP_LOSS_RATE    = 0.020        # 개별 손절매 2%
 
 # ─── 스캐너 파라미터 (params.json으로 자동 조정 대상) ──────
 SCANNER_INTERVAL_SEC  = 900     # 스캔 주기 (초) — 15분 (Phase 4: 동적 스위칭 반응성)
-MIN_VOLUME_USD        = 100_000_000  # 최소 24h 거래량 $100M
+# 최소 24h 거래량 — testnet 은 마켓 거래량이 mainnet 의 1/100 수준이라
+# $100M 임계값으로는 어떤 코인도 통과 불가. testnet 모드에선 $10M 으로 자동 완화
+# (BTC/ETH/DOGE/SOL 등 메이저만 통과되는 안전한 수준).
+MIN_VOLUME_USD        = 10_000_000 if MODE == "testnet" else 100_000_000
 ATR_MIN_RATE          = 0.005   # ATR 최소 비율 (변동성 하한)
 ATR_MAX_RATE          = 0.050   # ATR 최대 비율 (펌프앤덤프 차단 상한)
 
