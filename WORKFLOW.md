@@ -9,8 +9,8 @@
 
 | 항목 | 값 |
 |------|----|
-| **현재 Phase** | **Phase 7 운영 — 페이퍼 매매 정상화 완료**. 2026-04-28 D1 진단·패치 완료(48시간 후보 0건 원인=testnet 거래량 부족 → MIN_VOLUME testnet $10M 자동 완화). 봇 BTC/USDT 매매 사이클 정상 작동, trades 14→120건(BUY 38/SELL 82). 누적 PnL -1,673원(testnet, 정상 변동). 다음은 🤖 N15(BUY pnl 음수 결함) → R1(누적 손익) → N18(시장 악화 회복 조건). Day ~14 에 R3 + 👤 B3 판단 |
-| **마지막 점검** | 2026-04-28 (D1 진단 — testnet 페이퍼 가동 후 실데이터 검증) |
+| **현재 Phase** | **Phase 7 운영 — 관찰 모드(2026-04-28~)**. D1 진단·패치 완료(testnet 거래량 부족 → MIN_VOLUME $10M 자동 완화), OPS2 KST View 추가 완료. 봇 BTC/USDT 매매 사이클 정상, trades 14→120건. **사용자 합의 흐름: 손 떼고 페이퍼 데이터 누적 → Day ~7 즈음 🤖 R1(누적 손익 표시) → Day ~14(2026-05-09) 👤 B3 판단**. N15/N16/N17/N18 은 페이퍼 데이터 정확성에 영향 없어 모두 보류 |
+| **마지막 점검** | 2026-04-28 (D1 진단 + OPS2 KST View — testnet 페이퍼 가동 후 실데이터 검증) |
 | **점검 누적** | 3/3 |
 | **남은 블로커** | 없음 — 매매 사이클 작동 확인 (Supabase 정상 기록, 텔레그램 [거래] 메시지 도달) |
 | **테스트 상태** | 전체 통과 (`python test.py` 기본 실행으로 Phase 3/4 + bugfix + Phase 6/7 전부 커버) |
@@ -38,7 +38,14 @@ python main.py
 
 ## 현재 작업
 
-> 없음 — 아래 "다음 작업" 목록 최상위 항목(H1) 선택
+> **🟢 관찰 모드 (2026-04-28~)** — 페이퍼 트레이딩 자연 누적 중.
+> 봇 매매 정상 작동, 사용자 손 떼고 며칠 지켜보며 결정. **다음 진입: 🤖 R1 (누적 손익 표시) — B3 판단(2026-05-09 전후) 직전 필수.**
+> 시작 시점은 사용자 재량. **Day 7 (~2026-05-05) 즈음 권장**, 늦어도 **Day 12 (~2026-05-10) 까지** 마감.
+>
+> 새 세션 첫 액션 후보:
+> - 페이퍼 데이터 점검: `python -c "..."` 또는 Supabase `trades_kst` 직접 조회
+> - 텔레그램 `/status` 응답 확인 — 누적 거래 횟수·승률 확인
+> - R1 진행 시점이라면: "R1 진행해줘" 한 줄로 시작 가능
 
 <!--
 작업 중일 때 아래 형식으로 채워넣을 것:
@@ -91,38 +98,24 @@ python main.py
 
 ## 다음 작업 목록 (우선순위 순)
 
-> **2026-04-22 감사 반영** (플랜: `~/.claude/plans/streamed-launching-cascade.md`) — Phase 7 코드 완료 후 감사에서 N1~N14 도출. **N 트랙이 C 트랙(C1)보다 선행**. A 트랙 사용자 액션은 Claude 작업과 병행 가능.
+> **2026-04-28 합의 흐름** — D1 페이퍼 매매 정상화 완료 후 사용자가 "관찰 모드" 선택. R1 만 B3 직전에 필수, 나머지는 페이퍼 누적과 무관해 모두 보류.
 
 ---
 
-### 🗓️ 권장 타임라인
+### 🎯 현 우선순위 (관찰 모드 → R1 → B3)
 
-```
-Day 0 (오늘)
- ├─ 🤖 N3+N4 호출부 추가 → 테스트 → 커밋 ✅ 2026-04-22 완료
- ├─ 🤖 N1 Supabase→SQLite fallback → 테스트 → 커밋 ✅ 2026-04-22 완료
- └─ 🤖 N8 테스트 기본 모드 개편 → 커밋 ✅ 2026-04-22 완료
+| 시점 | 액션 | 비고 |
+|------|------|------|
+| **2026-04-28~05/05 (Day 0~7)** | 👤 **손 떼고 페이퍼 데이터 누적** | 사람 개입 = 검증 외란. 매매 패턴 자연 관찰. 매일 텔레그램 `/status` 또는 Supabase `trades_kst` 로 누적량만 확인 |
+| **05/05~05/07 (Day 7~9)** | 🤖 **R1 진행 권장** | `/status` 응답에 누적 손익 추가. `persistence.get_total_pnl(mode)` 헬퍼 + 회귀 테스트 1건 |
+| **05/07~05/09 (선택)** | 🤖 R3 (분석 대시보드) | 승률·MDD·샤프비. R1 만으로도 B3 가능하나 있으면 강력 |
+| **2026-05-09 (Day 14)** | 👤 **B3 판단** | 누적 손익 검토 → MODE=live 전환 여부 결정 → 실거래 HMAC 키 발급(IP 화이트리스트, 출금권한 OFF) → `.env` `MODE=live` 전환 |
 
-Day 0~1 (병행)
- ├─ 👤 A1b Supabase 프로젝트 + schema.sql 적용 ✅ 2026-04-23 완료
- └─ 👤 A4 Lightsail 생성 + setup.sh + systemctl start ✅ 2026-04-25 완료
-
-Day 1~3
- ├─ 🤖 N2·N5·N5b ✅ 완료 / N6·N7 잔여
- ├─ 👤 B1 testnet 키 발급 ✅ 2026-04-25 완료 (`CoinTradingBot` HMAC 키)
- └─ 👤 B2 testnet 부팅 + recover_state 13건 청산 ✅ 2026-04-25 완료
-
-Day 3~10 (1~2주 페이퍼 방치)
- ├─ 🤖 R1·R2 (리포팅 — B3 판단 전 필수)
- ├─ 🤖 N9·N10·N12·N13·N14·B7 (Medium/Low 소화)
- └─ 🤖 C 트랙 (C1~C4 백테스트 엔진) 진행 가능
-
-Day ~14
- ├─ 🤖 R3 (B3 직전 분석 대시보드)
- └─ 👤 B3 누적 손익 검토 → MODE=live 전환 판단
-```
-
-> 💡 **권장 순서:** N1 완료(2026-04-22) — Supabase 설정 실수가 있어도 봇이 SQLite fallback 으로 기동되므로 👤 A1b 를 안전하게 진행 가능.
+> 💡 **보류 항목 (페이퍼 데이터 정확성에 영향 없음 — 새 세션에서도 그대로 보류 권장)**
+> - **N15** (Med): BUY 행 pnl 음수 기록 → 분석 시 `WHERE side='SELL'` 만 합산하면 영향 0
+> - **N16** (Low): WBTC LOT_SIZE 청산 실패 → 매 재시작 시 텔레그램 [오류] 1건, 매매 무관
+> - **N17** (Low): fetch_open_orders symbol 미지정 ccxt 경고 → 동작 정상
+> - **N18** (Med): 시장 악화 자동 전환 → 30분 후 200MA 기반 자동 회복, 영구 차단 아님
 
 ---
 
@@ -186,18 +179,18 @@ A 와 독립. 로컬 개발 환경에서 진행. **C1 전 반드시 N3+N4 → N1
 - [x] A3: `config.py` DB_BACKEND·SUPABASE_DB_URL, `.env.example` 갱신, `requirements.txt` asyncpg==0.30.0
 - [x] A5: `deploy/daily30k.service`, `setup.sh`, `update.sh` 작성
 - [x] **A1b** (2026-04-23 완료): Supabase 프로젝트 생성 (서울 리전) + `deploy/schema.sql` 적용 + Pooler(6543) URI `.env` 기입. 로컬 `asyncpg` 검증 (Postgres 17.6, 3 테이블 컬럼 1:1 일치)
-- [ ] **A4** (사용자, ~30분): AWS Lightsail 인스턴스 생성 (서울, $5, Ubuntu 22.04) → SSH 접속 → `bash deploy/setup.sh` 실행 → `.env` 에 Supabase URI·바이낸스 키 입력 → `sudo systemctl start daily30k`
+- [x] **A4** (2026-04-25 완료): AWS Lightsail $7 (서울, IP `3.36.26.177`, Ubuntu 22.04) 생성 + `bash deploy/setup.sh` 통과 + `.env` 작성 + `sudo systemctl start daily30k`
 
 #### 🟡 A 완료 후 진행
 
 **B 트랙 — 페이퍼 트레이딩 실연결**
 
-- [ ] **B1** (사용자): https://testnet.binance.vision 가입 → HMAC 키 발급 → 서버 `.env` 에 `MODE=testnet` + `BINANCE_TESTNET_API_KEY` + `BINANCE_TESTNET_SECRET_KEY` 기재
-- [ ] **B2** (사용자): `sudo systemctl restart daily30k` → 텔레그램 부팅 메시지 `[MODE=TESTNET]` 확인 · Supabase `trades` 테이블 행 증가 검증
+- [x] **B1** (2026-04-25 완료): https://testnet.binance.vision 가입 + HMAC 키(`CoinTradingBot`) 발급 + 서버 `.env` 에 `MODE=testnet` + 키 기재
+- [x] **B2** (2026-04-25 완료): `sudo systemctl restart daily30k` → 텔레그램 `[MODE=TESTNET]` 부팅 + recover_state 13건 청산 + 매매 사이클 진입 확인 (D1 패치 후 정상)
 
-#### 🔴 1~2주 페이퍼 누적 후
+#### 🔴 1~2주 페이퍼 누적 후 (~2026-05-09)
 
-- [ ] **B3** (사용자): 1주일 누적 손익 리포트 리뷰 → `MODE=live` 전환 여부 판단 → 실거래 바이낸스 HMAC 키 발급 (IP 화이트리스트·출금권한 OFF) → `.env` `MODE=live` + `BINANCE_API_KEY`/`BINANCE_SECRET_KEY` 기재 → `sudo systemctl restart daily30k`
+- [ ] **B3** (사용자, ~Day 14): 누적 손익 리포트(R1) 리뷰 → `MODE=live` 전환 여부 판단 → 실거래 바이낸스 HMAC 키 발급 (IP 화이트리스트·출금권한 OFF) → `.env` `MODE=live` + `BINANCE_API_KEY`/`BINANCE_SECRET_KEY` 기재 → `sudo systemctl restart daily30k`
 
 ---
 
