@@ -54,3 +54,32 @@ CREATE TABLE IF NOT EXISTS bot_events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_mode_ts ON bot_events(mode, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_events_type_ts ON bot_events(event_type, ts DESC);
+
+-- ────────────────────────────────────────────────────────────────
+-- KST 표시용 View (Supabase 대시보드 조회 편의)
+-- 원본 테이블의 created_at 은 UTC TIMESTAMPTZ — KST 환산은 +9시간.
+-- 각 View 는 created_at 만 KST timestamp(without timezone) 로 변환.
+-- 봇 런타임은 base 테이블만 사용. View 는 사용자 조회 전용.
+-- ────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE VIEW trades_kst AS
+SELECT
+    id, ts,
+    (created_at AT TIME ZONE 'Asia/Seoul')::timestamp AS created_at,
+    symbol, side, qty, price, fee, pnl, mode
+FROM trades;
+
+CREATE OR REPLACE VIEW equity_snapshots_kst AS
+SELECT
+    id, ts,
+    (created_at AT TIME ZONE 'Asia/Seoul')::timestamp AS created_at,
+    mode, equity_usdt, cash_usdt, position_value_usdt,
+    realized_pnl, unrealized_pnl
+FROM equity_snapshots;
+
+CREATE OR REPLACE VIEW bot_events_kst AS
+SELECT
+    id, ts,
+    (created_at AT TIME ZONE 'Asia/Seoul')::timestamp AS created_at,
+    mode, event_type, severity, message, context
+FROM bot_events;
