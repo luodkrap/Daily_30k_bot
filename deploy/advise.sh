@@ -282,7 +282,7 @@ ${BOLD}표준 배포 명령${NC}
   ssh ubuntu@3.36.26.177
   cd ~/Daily_30k_bot && bash deploy/update.sh
   ${DIM}# 검증${NC}
-  tail -f logs/daily30k.err.log
+  sudo journalctl -u daily30k -f
   ${DIM}# 텔레그램 [MODE=TESTNET] 부팅 메시지 재수신 확인${NC}
 EOF
         ;;

@@ -137,9 +137,14 @@
 
 **낮음 (Low)**
 
-- [ ] 🤖 N12: `deploy/daily30k.service` 로그 rotate 미설정 → `/etc/logrotate.d/daily30k` 추가 또는 journald 전환
+- [x] 🤖 ~~N12 (2026-05-04 완료): `deploy/daily30k.service` `StandardOutput/Error=journal` + `SyslogIdentifier=daily30k` 전환. systemd-journald 자동 timestamp(microsecond UTC) + auto-rotate + `journalctl --since` 시간쿼리 + `-p err` 에러 필터. setup.sh/update.sh/advise.sh 로그 명령 갱신. 회귀 테스트 1건. 4/28~5/4 6일 hang 사후 디버깅 거의 불가능했던 게 동기~~
 - [ ] 🤖 N13: `executor.py:282-299` `monitor_orders` 단일 주문 실패가 사이클 중단 → 체결 핸들러 개별 try-except
 - [ ] 🤖 N14: `main.py:125-141` `_supervise` `max_restarts` 초과 시 `kill_event.set()` 호출 검증 테스트 없음
+
+**🔴 안전 패치 (2026-05-04 hang 사건 후 신설, 모두 완료)**
+
+- [x] 🤖 ~~**N19** (2026-05-04 완료): `BotState.executor_heartbeat: float = 0.0` 추가 + `_supervise(watchdog_timeout=600.0, heartbeat_attr="executor_heartbeat")` 매개변수 추가 — executor 만 600초 무갱신 시 task 강제 cancel → TimeoutError 변환 → 기존 재시작 경로 재사용 + SUPERVISOR_RESTART 페이로드 `is_watchdog: true`. heartbeat 갱신 위치 2곳 (executor 메인 루프 1초마다 / recover_state 매 자산 처리 시작점). recover_state 시그니처 `(exchange, state=None)` 옵셔널 추가. 회귀 테스트 2건~~
+- [x] 🤖 ~~**N20** (2026-05-04 완료): `_retry_api(timeout=60.0)` 매개변수 추가 — 각 시도를 `asyncio.wait_for` 로 감싸 ccxt 외부 await(fetch_balance/fetch_ticker/fetch_ohlcv/fetch_open_orders/cancel_order/create_order)이 영원히 hang 되지 않도록. 타임아웃은 일반 예외와 동일하게 다음 시도로 넘어감(지수 백오프 1→2→4초). 회귀 테스트 2건~~
 
 **페이퍼 운영 중 발견 (2026-04-28 D1 완료 후 추가)**
 

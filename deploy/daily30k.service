@@ -12,8 +12,12 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/ubuntu/Daily_30k_bot/venv/bin/python main.py
 Restart=on-failure
 RestartSec=10
-StandardOutput=append:/home/ubuntu/Daily_30k_bot/logs/daily30k.out.log
-StandardError=append:/home/ubuntu/Daily_30k_bot/logs/daily30k.err.log
+# N12 (2026-05-04): logs/*.log append → journald 전환. 자동 timestamp(microsecond UTC)
+# + 자동 rotate(SystemMaxUse 기본 10% disk) + 시간 쿼리(`journalctl --since`) + 에러 필터(`-p err`).
+# 이전 시스템은 print 캡처라 timestamp 부재 → 4/28~5/4 6일 hang 사건의 사후 디버깅 거의 불가능했던 게 교훈.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=daily30k
 
 # 메모리 상한 — 1GB RAM Lightsail 에서 OOM 방지
 MemoryMax=512M

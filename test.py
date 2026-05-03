@@ -1724,6 +1724,183 @@ def test_n2_record_equity_snapshot_swallows_backend_error():
     print("  [PASS] n2_record_equity_swallows: 30분 스냅샷 타이머가 지속 가능")
 
 
+def test_n12_service_uses_journald():
+    """N12: deploy/daily30k.service 가 journald 로 로그 캡처 (timestamp 자동 부여 + auto-rotate).
+
+    2026-04-28~05-04 6일 hang 사후 디버깅 시 print 캡처 로그에 timestamp 가
+    없어 hang 시각을 추정 못 했던 것이 가장 큰 교훈. journald 전환으로
+    `journalctl --since "Apr 28 02:00"` 같은 시간 쿼리가 가능해야 한다."""
+    from pathlib import Path
+
+    svc_path = Path(__file__).parent / "deploy" / "daily30k.service"
+    content = svc_path.read_text()
+    assert "StandardOutput=journal" in content, "stdout journald 미전환"
+    assert "StandardError=journal" in content, "stderr journald 미전환"
+    assert "SyslogIdentifier=daily30k" in content, "SyslogIdentifier 누락 (journalctl -t 식별자)"
+    # 기존 append:logs/*.log 흔적이 남아있으면 systemd 가 우선순위 충돌
+    assert "append:" not in content, "이전 append 모드 잔재 — journald 와 충돌"
+    print("  [PASS] n12_service_uses_journald: journald 전환 + SyslogIdentifier 확인")
+
+
+def test_n19_supervise_cancels_hung_executor():
+    """N19: heartbeat 무갱신 코루틴을 watchdog_timeout 초과 시 강제 cancel → TimeoutError → 재시작.
+
+    2026-04-28~05-04 사건의 핵심: run_executor 가 어떤 await 에서 예외 없이
+    영원히 갇혀도 _supervise 가 못 잡았던 것. watchdog_timeout 으로 hang 을
+    예외로 변환해 기존 재시작 경로 재사용."""
+    import main as main_mod
+    import persistence
+    import notifier
+    from shared_state import BotState
+
+    state = BotState()
+    captured_events: list[tuple] = []
+    sent_messages: list = []
+
+    orig_record = persistence.record_event
+    orig_send = notifier.send
+    orig_notify = notifier.notify_error
+
+    async def fake_record(mode, event_type, severity, message, payload=None):
+        captured_events.append((event_type, severity, message, payload))
+
+    async def fake_send(msg, **kw):
+        sent_messages.append(msg)
+
+    async def fake_notify(ctx, e):
+        sent_messages.append(("error", ctx, str(e)))
+
+    persistence.record_event = fake_record
+    notifier.send = fake_send
+    notifier.notify_error = fake_notify
+
+    invocation = [0]
+
+    async def coro():
+        invocation[0] += 1
+        if invocation[0] >= 2:
+            # 두 번째 시도: 정상 종료 (재시작 무한 루프 방지)
+            return
+        # 첫 번째: heartbeat 갱신 없이 무한 await → watchdog 발동 대상
+        await asyncio.sleep(10.0)
+
+    try:
+        asyncio.run(main_mod._supervise(
+            "executor", coro, state,
+            max_restarts=3,
+            watchdog_timeout=0.5,
+            heartbeat_attr="executor_heartbeat",
+        ))
+    finally:
+        persistence.record_event = orig_record
+        notifier.send = orig_send
+        notifier.notify_error = orig_notify
+
+    # 첫 시도 watchdog cancel → SUPERVISOR_RESTART 1건, 그 후 정상 종료
+    restart_events = [e for e in captured_events if e[0] == "SUPERVISOR_RESTART"]
+    assert len(restart_events) == 1, (
+        f"SUPERVISOR_RESTART 정확히 1건이어야: {captured_events}"
+    )
+    assert restart_events[0][3] is not None and restart_events[0][3].get("is_watchdog") is True, (
+        f"is_watchdog payload 누락: {restart_events[0]}"
+    )
+    assert invocation[0] == 2, f"두 번째 시도 진입해야: {invocation[0]}"
+    print(f"  [PASS] n19_supervise_cancels_hung: {invocation[0]}회 시도, "
+          f"watchdog 1회 발동")
+
+
+def test_n19_supervise_normal_executor_no_false_trigger():
+    """N19: heartbeat 갱신 정상 코루틴은 watchdog 발동 없이 정상 종료."""
+    import time
+    import main as main_mod
+    import persistence
+    import notifier
+    from shared_state import BotState
+
+    state = BotState()
+    captured_events: list = []
+    orig_record = persistence.record_event
+    orig_send = notifier.send
+    orig_notify = notifier.notify_error
+
+    async def fake_record(*a, **kw):
+        captured_events.append(a)
+
+    async def noop(*a, **kw):
+        pass
+
+    persistence.record_event = fake_record
+    notifier.send = noop
+    notifier.notify_error = noop
+
+    async def healthy_coro():
+        # heartbeat 매 0.05s 갱신 — watchdog_timeout 0.5s 보다 훨씬 빠름
+        for _ in range(6):
+            state.executor_heartbeat = time.time()
+            await asyncio.sleep(0.05)
+        # 정상 종료
+
+    try:
+        asyncio.run(main_mod._supervise(
+            "executor", healthy_coro, state,
+            max_restarts=3,
+            watchdog_timeout=0.5,
+            heartbeat_attr="executor_heartbeat",
+        ))
+    finally:
+        persistence.record_event = orig_record
+        notifier.send = orig_send
+        notifier.notify_error = orig_notify
+
+    assert len(captured_events) == 0, (
+        f"정상 코루틴인데 SUPERVISOR_RESTART 발생: {captured_events}"
+    )
+    print("  [PASS] n19_supervise_normal_no_false_trigger: 정상 종료 + 0건 재시작")
+
+
+def test_n20_retry_api_times_out_on_hung_call():
+    """N20: _retry_api 가 hung await 을 timeout 으로 끊고 max_retries 만큼 시도 후 raise.
+
+    이번 사건의 가장 의심되는 가설: ccxt 의 fetch_balance/fetch_ticker/fetch_ohlcv
+    같은 외부 await 가 네트워크 이상으로 영원히 갇힘. 60s 디폴트 timeout 으로
+    각 시도를 끊으면 지수 백오프 후 최종 raise → 호출부 try/except 가 잡음."""
+    import asyncio as _async
+    from executor import _retry_api
+
+    call_count = [0]
+
+    async def hung_fn():
+        call_count[0] += 1
+        await _async.sleep(5.0)  # timeout 보다 훨씬 김
+
+    raised: BaseException | None = None
+    try:
+        asyncio.run(_retry_api(hung_fn, max_retries=2, timeout=0.05))
+    except BaseException as e:
+        raised = e
+
+    assert isinstance(raised, _async.TimeoutError), (
+        f"기대 TimeoutError, 실제: {type(raised).__name__}={raised!r}"
+    )
+    assert call_count[0] == 2, (
+        f"max_retries=2 만큼 시도해야: 실제 {call_count[0]}"
+    )
+    print(f"  [PASS] n20_retry_api_times_out: {call_count[0]}회 시도 후 TimeoutError")
+
+
+def test_n20_retry_api_normal_call_unaffected():
+    """N20: 정상 빠른 호출은 timeout 영향 없이 결과 반환."""
+    from executor import _retry_api
+
+    async def fast_fn(value):
+        await asyncio.sleep(0.01)
+        return value * 2
+
+    result = asyncio.run(_retry_api(fast_fn, 21, timeout=1.0))
+    assert result == 42, f"기대 42, 실제 {result}"
+    print("  [PASS] n20_retry_api_normal_unaffected: timeout 적용해도 정상 호출 영향 없음")
+
+
 def test_n2_notifier_failure_also_swallowed():
     """N2: notifier 자체 장애(텔레그램 다운 등)에도 persistence 공개 함수는 예외 미전파."""
     import persistence
@@ -1875,6 +2052,14 @@ if __name__ == "__main__":
         test_n2_record_equity_snapshot_swallows_backend_error()
         test_n2_notifier_failure_also_swallowed()
         print("Phase 7 N2 자체 격리 단위 테스트 통과!")
+
+        print("\n=== Phase 7: N12+N19+N20 안전 패치 (executor hang 재발 방지) ===")
+        test_n12_service_uses_journald()
+        test_n19_supervise_cancels_hung_executor()
+        test_n19_supervise_normal_executor_no_false_trigger()
+        test_n20_retry_api_times_out_on_hung_call()
+        test_n20_retry_api_normal_call_unaffected()
+        print("Phase 7 N12+N19+N20 안전 패치 단위 테스트 통과!")
 
     if mode == "unit":
         # 기본 실행: 모든 오프라인 단위 테스트 (Phase 3/4 + bugfix + Phase 6/7).

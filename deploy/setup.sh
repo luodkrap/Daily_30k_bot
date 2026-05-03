@@ -46,7 +46,7 @@ fi
 ./venv/bin/pip install --upgrade pip
 ./venv/bin/pip install -r requirements.txt
 
-echo "[4/6] 로그 디렉토리 생성"
+echo "[4/6] 로그 디렉토리 (역사적 호환 — N12 이후 journald 사용, logs/ 미사용)"
 mkdir -p logs
 
 echo "[5/6] systemd unit 등록"
@@ -67,7 +67,9 @@ cat <<EOF
   5) sudo systemctl status $SERVICE_NAME
   6) 텔레그램 부팅 메시지의 [MODE=...] 확인
 
-로그 확인:  tail -f logs/daily30k.err.log
+로그 확인:  sudo journalctl -u $SERVICE_NAME -f
+시간 범위:  sudo journalctl -u $SERVICE_NAME --since "10 minutes ago"
+에러만:     sudo journalctl -u $SERVICE_NAME -p err
 중지:       sudo systemctl stop $SERVICE_NAME
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EOF

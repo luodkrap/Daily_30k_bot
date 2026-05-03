@@ -36,4 +36,4 @@ sleep 2
 sudo systemctl status "$SERVICE_NAME" --no-pager -l | head -20
 
 echo ""
-echo "배포 완료. 로그:  tail -f logs/daily30k.err.log"
+echo "배포 완료. 로그:  sudo journalctl -u $SERVICE_NAME -f"

@@ -46,6 +46,13 @@ class BotState:
     is_running: bool = False
     exchange: object = None  # ccxt exchange 인스턴스 (seed_cmd에서 잔고 조회용)
 
+    # ─── 컴포넌트 heartbeat (N19 watchdog) ────────────────
+    # executor 메인 루프가 매 iteration 첫 줄에서 time.time() 으로 갱신.
+    # _supervise(watchdog_timeout=600) 가 600초 무갱신 시 task 강제 cancel → 재시작.
+    # 4/28~5/4 6일간 run_executor 단독 hang 사건(예외 없음 → 기존 _supervise 가 못 잡음)
+    # 재발 방지가 목적. recover_state 내부 throttle sleep 직후에도 갱신.
+    executor_heartbeat: float = 0.0
+
     def reset_daily(self) -> None:
         """자정 일일 집계 수치 초기화. run_executor에서 날짜 변경 감지 시 호출."""
         self.daily_pnl = 0.0

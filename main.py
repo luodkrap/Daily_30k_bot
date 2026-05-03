@@ -123,14 +123,57 @@ async def run_telegram_bot(state: BotState) -> None:
     print("[Telegram] 종료")
 
 
-async def _supervise(name: str, coro_factory, state: BotState, max_restarts: int = 5) -> None:
+async def _supervise(
+    name: str,
+    coro_factory,
+    state: BotState,
+    max_restarts: int = 5,
+    watchdog_timeout: float | None = None,
+    heartbeat_attr: str | None = None,
+) -> None:
     """컴포넌트 코루틴을 감시하고 예외 발생 시 재시작.
-    재시작 한도(max_restarts) 초과 시 킬 이벤트를 set 하여 전체 안전 종료."""
+
+    재시작 한도(max_restarts) 초과 시 킬 이벤트를 set 하여 전체 안전 종료.
+
+    N19 watchdog: ``watchdog_timeout`` 과 ``heartbeat_attr`` 가 주어지면
+    ``getattr(state, heartbeat_attr)`` 가 ``watchdog_timeout`` 초 이상 무갱신일 때
+    실행 중인 task 를 강제 cancel 하여 TimeoutError 로 변환 → 기존 재시작 경로 재사용.
+    예외 없이 영원히 await 에 갇히는 silent hang(2026-04-28~05-04 사건) 대응.
+    """
+    import time
     import config
     restarts = 0
     while not state.kill_event.is_set():
         try:
-            await coro_factory()
+            if watchdog_timeout and heartbeat_attr:
+                # heartbeat 초기화 — 부팅 직후 stale 값으로 인한 즉시 발동 방지.
+                setattr(state, heartbeat_attr, time.time())
+                task = asyncio.create_task(coro_factory())
+                # 폴링 주기는 watchdog_timeout/4 와 60초 중 작은 값 (반응성 vs CPU 균형).
+                poll_interval = min(60.0, watchdog_timeout / 4)
+                while not task.done():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(task), timeout=poll_interval)
+                        break  # task 정상 종료
+                    except asyncio.TimeoutError:
+                        last = getattr(state, heartbeat_attr, 0.0) or 0.0
+                        idle = time.time() - last
+                        if idle > watchdog_timeout:
+                            task.cancel()
+                            try:
+                                await task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                            raise TimeoutError(
+                                f"{name} watchdog: heartbeat {idle:.0f}s 무갱신 "
+                                f"(임계 {watchdog_timeout:.0f}s) → 강제 재시작"
+                            )
+                # task.done() — 정상 종료 또는 내부 예외
+                exc = task.exception() if not task.cancelled() else None
+                if exc is not None:
+                    raise exc
+            else:
+                await coro_factory()
             return  # 정상 종료 (자체 루프 break)
         except Exception as e:
             restarts += 1
@@ -139,7 +182,8 @@ async def _supervise(name: str, coro_factory, state: BotState, max_restarts: int
                 config.MODE, "SUPERVISOR_RESTART",
                 "CRITICAL" if restarts >= max_restarts else "WARNING",
                 f"{name} 예외 재시작 {restarts}/{max_restarts}",
-                {"component": name, "error": str(e), "restarts": restarts},
+                {"component": name, "error": str(e), "restarts": restarts,
+                 "is_watchdog": isinstance(e, TimeoutError)},
             )
             if restarts >= max_restarts:
                 await send(f"[치명적] {name} 재시작 한도 초과 — 봇 종료")
@@ -185,7 +229,11 @@ async def main() -> None:
         # return_exceptions=True 는 supervisor 자체가 예외를 흘릴 가능성 대비 이중 안전망
         await asyncio.gather(
             _supervise("screener", lambda: run_screener(state, exchange), state),
-            _supervise("executor", lambda: run_executor(state, exchange), state),
+            # N19: executor 만 watchdog 적용 (10분 무갱신 시 강제 재시작).
+            # executor 메인 루프는 1초 간격으로 heartbeat 갱신하므로 600초 무갱신 = 명확한 hang.
+            # recover_state 내부도 매 자산 처리 시작점에서 갱신하므로 다중 청산도 안전.
+            _supervise("executor", lambda: run_executor(state, exchange), state,
+                       watchdog_timeout=600.0, heartbeat_attr="executor_heartbeat"),
             _supervise("telegram", lambda: run_telegram_bot(state), state),
             return_exceptions=True,
         )

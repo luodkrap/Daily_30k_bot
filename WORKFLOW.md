@@ -9,10 +9,10 @@
 
 | 항목 | 값 |
 |------|----|
-| **현재 Phase** | **Phase 7 운영 — 관찰 모드(2026-04-28~)**. D1 진단·패치 완료(testnet 거래량 부족 → MIN_VOLUME $10M 자동 완화), OPS2 KST View 추가 완료. 봇 BTC/USDT 매매 사이클 정상, trades 14→120건. **사용자 합의 흐름: 손 떼고 페이퍼 데이터 누적 → Day ~7 즈음 🤖 R1(누적 손익 표시) → Day ~14(2026-05-09) 👤 B3 판단**. N15/N16/N17/N18 은 페이퍼 데이터 정확성에 영향 없어 모두 보류 |
-| **마지막 점검** | 2026-04-28 (D1 진단 + OPS2 KST View — testnet 페이퍼 가동 후 실데이터 검증) |
-| **점검 누적** | 3/3 |
-| **남은 블로커** | 없음 — 매매 사이클 작동 확인 (Supabase 정상 기록, 텔레그램 [거래] 메시지 도달) |
+| **현재 Phase** | **Phase 7 운영 — 관찰 모드 (재시작 2026-05-04 01:47 KST)**. **사건: 4/28 02:25 KST 이후 6일간 `run_executor` 코루틴 단독 hang** (예외 없음 → `_supervise`가 못 잡음 → SUPERVISOR_RESTART 0건). 5/4 01:46 UTC 수동 `systemctl restart` 로 매매 재개, 청산 8건 + BTC 그리드 정상 셋업 확인. **사용자 합의 변경 (2026-05-04): 안전 패치 풀 패키지 (N12 로그+N19 watchdog+N20 timeout) → 페이퍼 누적 재개 → 👤 B3 판단 5/9 → 5/18+ 연기**. 근거: hang 재발 시 또 페이퍼 데이터 손실, 안전망 마련 후 청정 데이터 누적이 합리적 |
+| **마지막 점검** | 2026-05-04 (executor hang 진단 + 수동 재시작 + N12/N19/N20 풀 패키지 합의) |
+| **점검 누적** | 4/3 |
+| **남은 블로커** | 없음 — 매매 사이클 재가동 (5/4 01:47 EXECUTOR_START 확인, 그리드 BTC/USDT 배치 완료) |
 | **테스트 상태** | 전체 통과 (`python test.py` 기본 실행으로 Phase 3/4 + bugfix + Phase 6/7 전부 커버) |
 | **로드맵 플랜** | `~/.claude/plans/streamed-launching-cascade.md` (2026-04-22 승인 — 역할 분담·타임라인) |
 
@@ -38,14 +38,13 @@ python main.py
 
 ## 현재 작업
 
-> **🟢 관찰 모드 (2026-04-28~)** — 페이퍼 트레이딩 자연 누적 중.
-> 봇 매매 정상 작동, 사용자 손 떼고 며칠 지켜보며 결정. **다음 진입: 🤖 R1 (누적 손익 표시) — B3 판단(2026-05-09 전후) 직전 필수.**
-> 시작 시점은 사용자 재량. **Day 7 (~2026-05-05) 즈음 권장**, 늦어도 **Day 12 (~2026-05-10) 까지** 마감.
+> **🟢 관찰 모드 재개 (N12+N19+N20 패치 배포 후)** — 코드/테스트 완료 (2026-05-04 로컬). 도울님이 Lightsail 서버에 `bash deploy/update.sh` 로 배포 후 페이퍼 누적 재시작.
 >
 > 새 세션 첫 액션 후보:
-> - 페이퍼 데이터 점검: `python -c "..."` 또는 Supabase `trades_kst` 직접 조회
-> - 텔레그램 `/status` 응답 확인 — 누적 거래 횟수·승률 확인
-> - R1 진행 시점이라면: "R1 진행해줘" 한 줄로 시작 가능
+> - 도울님 측: SSH → `cd ~/Daily_30k_bot && bash deploy/update.sh` → 텔레그램 부팅 메시지 + recover_state 청산 확인
+> - 배포 후 며칠 누적 후 점검: Supabase `equity_snapshots` 30분 사이클이 끊기지 않고 잘 적재되는지 확인 (이번 안전 패치의 핵심 검증 지표)
+> - Day 7 (~2026-05-11) 즈음 R1 진행
+> - **새로 알게 된 진단 도구**: 향후 봇 정상 작동 오인이 의심되면 → `feedback_diagnose_silent_hang` 메모 참조 (Supabase EXECUTOR_START·equity_snapshot 시각이 진짜 신호)
 
 <!--
 작업 중일 때 아래 형식으로 채워넣을 것:
@@ -68,6 +67,7 @@ python main.py
 
 | 날짜 | 파일 | 변경 이유 |
 |------|------|-----------|
+| 2026-05-04 | [deploy/daily30k.service](deploy/daily30k.service), [deploy/setup.sh](deploy/setup.sh), [deploy/update.sh](deploy/update.sh), [deploy/advise.sh](deploy/advise.sh), [shared_state.py](shared_state.py), [main.py](main.py), [executor.py](executor.py), [test.py](test.py) | **N12+N19+N20 안전 패치 풀 패키지** — 4/28~5/4 6일 `run_executor` 단독 hang 사건(예외 없음 → `_supervise` 못 잡음 → SUPERVISOR_RESTART 0건) 재발 방지. **N12**: systemd unit `StandardOutput/Error=journal` + `SyslogIdentifier=daily30k` 전환 (timestamp 자동 부여 + auto-rotate + `journalctl --since` 시간쿼리). 사후 디버깅 가능성 확보가 가장 큰 동기. setup.sh/update.sh/advise.sh 로그 명령 `tail -f logs/*.log` → `journalctl -u daily30k -f` 갱신. **N19**: `BotState.executor_heartbeat` 추가 + `_supervise(watchdog_timeout, heartbeat_attr)` 매개변수 추가 — executor 만 600초 무갱신 시 task 강제 cancel → TimeoutError 변환 → 기존 재시작 경로 재사용 + SUPERVISOR_RESTART 페이로드 `is_watchdog: true`. heartbeat 갱신 위치 2곳: executor 메인 루프 매 iteration 첫 줄, recover_state 매 자산 처리 시작점(testnet 다중 청산 throttle 시간 보호). **N20**: `_retry_api(timeout=60.0)` 매개변수 추가 — 각 시도를 `asyncio.wait_for` 로 감싸 ccxt 외부 await(fetch_balance/fetch_ticker/fetch_ohlcv/fetch_open_orders/cancel_order/create_order)이 영원히 hang 되지 않도록. 타임아웃은 일반 예외와 동일하게 다음 시도로 넘어감. 회귀 테스트 5건 (`test_n12_service_uses_journald`, `test_n19_supervise_cancels_hung_executor`, `test_n19_supervise_normal_executor_no_false_trigger`, `test_n20_retry_api_times_out_on_hung_call`, `test_n20_retry_api_normal_call_unaffected`). 전체 테스트 통과 |
 | 2026-04-28 | [deploy/schema.sql](deploy/schema.sql) | **OPS2**: Supabase 대시보드 KST 조회 편의 — `trades_kst` / `equity_snapshots_kst` / `bot_events_kst` 3개 View 추가. `created_at TIMESTAMPTZ` 가 Postgres 표준대로 UTC 저장되어 대시보드에 `+00` offset 으로 표시되던 것을 `(created_at AT TIME ZONE 'Asia/Seoul')::timestamp` 변환 View 로 KST 표시. 멱등 `CREATE OR REPLACE VIEW`. 봇 코드/base 테이블 영향 없음 |
 | 2026-04-28 | [config.py](config.py), [deploy/daily30k.service](deploy/daily30k.service), [screener.py](screener.py) | **D1**: 페이퍼 운영 48시간째 trades 14건 정체(전부 recover SELL) → 진단 결과 `testnet 마켓 거래량이 mainnet 대비 1/100` 으로 `MIN_VOLUME_USD=$100M` 임계값을 어떤 코인도 못 넘김(testnet BTC/USDT 24h $82M). 본 패치: `MIN_VOLUME_USD = 10_000_000 if MODE == "testnet" else 100_000_000` 자동 분기. 부수: systemd unit `Environment=PYTHONUNBUFFERED=1` 영구 반영(서버 진단 중 발견된 logger buffer 문제). 진단용 DIAG1 print(_scan/_pre_filter 단계별 컷 분포)는 추가→revert 사이클로 정리. 결과: BTC/USDT 타겟 선정 정상, 4분 만에 그리드 5단 BUY 체결, trades 14→120건(BUY 38/SELL 82, 누적 PnL -1,673원 testnet). 신규 발견 이슈 4건은 N15~N18 백로그 등록 |
 | 2026-04-25 | [deploy/advise.sh](deploy/advise.sh), [skills/deploy-advisor.md](skills/deploy-advisor.md), [CLAUDE.md](CLAUDE.md), [TODO.md](TODO.md) | OPS1: 배포 가이드 시스템 구축. `deploy/advise.sh` 신규 — 변경 파일 유형별로 6등급 가이드(🔴 BEFORE DEPLOY / 🟠 ENV UPDATE / 🟠 SYSTEMD RELOAD / 🟡 TIMING WARNING / 🟢 AUTO / 🟢 STANDARD) 출력. `skills/deploy-advisor.md` 신규 — Claude 가 `*.py`/`deploy/*`/`.env.example`/`requirements.txt` 수정 세션 종료 시 `bash deploy/advise.sh --files ...` 실행해 응답에 첨부. `CLAUDE.md` 온디맨드 스킬 섹션에 참조 1줄. 6개 테스트 케이스 수동 검증 통과 (schema/env/service/trading/docs/복합) |
@@ -98,18 +98,19 @@ python main.py
 
 ## 다음 작업 목록 (우선순위 순)
 
-> **2026-04-28 합의 흐름** — D1 페이퍼 매매 정상화 완료 후 사용자가 "관찰 모드" 선택. R1 만 B3 직전에 필수, 나머지는 페이퍼 누적과 무관해 모두 보류.
+> **2026-05-04 합의 변경** — 4/28~5/4 6일간 `run_executor` 단독 hang 사건 발견. 안전 패치 풀 패키지 (N12+N19+N20) 진행 후 페이퍼 누적 재개. B3 일정 5/9 → 5/18+ 연기.
 
 ---
 
-### 🎯 현 우선순위 (관찰 모드 → R1 → B3)
+### 🎯 현 우선순위 (안전 패치 → 관찰 모드 재개 → R1 → B3)
 
 | 시점 | 액션 | 비고 |
 |------|------|------|
-| **2026-04-28~05/05 (Day 0~7)** | 👤 **손 떼고 페이퍼 데이터 누적** | 사람 개입 = 검증 외란. 매매 패턴 자연 관찰. 매일 텔레그램 `/status` 또는 Supabase `trades_kst` 로 누적량만 확인 |
-| **05/05~05/07 (Day 7~9)** | 🤖 **R1 진행 권장** | `/status` 응답에 누적 손익 추가. `persistence.get_total_pnl(mode)` 헬퍼 + 회귀 테스트 1건 |
-| **05/07~05/09 (선택)** | 🤖 R3 (분석 대시보드) | 승률·MDD·샤프비. R1 만으로도 B3 가능하나 있으면 강력 |
-| **2026-05-09 (Day 14)** | 👤 **B3 판단** | 누적 손익 검토 → MODE=live 전환 여부 결정 → 실거래 HMAC 키 발급(IP 화이트리스트, 출금권한 OFF) → `.env` `MODE=live` 전환 |
+| **2026-05-04 (지금)** | 🤖 **N12+N19+N20 풀 패키지** | 로그 timestamp(N12) + watchdog(N19) + await timeout(N20). 페이퍼 누적과 충돌 안 함 (오히려 신뢰성 ↑) |
+| **2026-05-04~05/11 (Day 0~7)** | 👤 **패치 배포 후 손 떼고 페이퍼 누적** | 사람 개입 = 검증 외란. 매일 `/status` 또는 Supabase `trades_kst` 로 누적량만 확인 |
+| **05/11~05/14 (Day 7~10)** | 🤖 **R1 진행 권장** | `/status` 응답에 누적 손익 추가. `persistence.get_total_pnl(mode)` 헬퍼 + 회귀 테스트 1건 |
+| **05/14~05/17 (선택)** | 🤖 R3 (분석 대시보드) | 승률·MDD·샤프비. R1 만으로도 B3 가능하나 있으면 강력 |
+| **2026-05-18 (Day 14)** | 👤 **B3 판단** | 누적 손익 검토 → MODE=live 전환 여부 결정 → 실거래 HMAC 키 발급(IP 화이트리스트, 출금권한 OFF) → `.env` `MODE=live` 전환 |
 
 > 💡 **보류 항목 (페이퍼 데이터 정확성에 영향 없음 — 새 세션에서도 그대로 보류 권장)**
 > - **N15** (Med): BUY 행 pnl 음수 기록 → 분석 시 `WHERE side='SELL'` 만 합산하면 영향 0
@@ -141,10 +142,14 @@ python main.py
 - [x] ~~N11: [PROJECT.md:86](PROJECT.md#L86) 헤더 "Phase 5 기준" → "Phase 7 기준"~~ ✅ 2026-04-22 문서 수정 완료
 
 **🟢 Low**
-- [ ] N12: [deploy/daily30k.service](deploy/daily30k.service) 로그 rotate — `/etc/logrotate.d/daily30k` 설정 또는 journald 전환
+- [x] ~~**N12** (2026-05-04 완료): `deploy/daily30k.service` `StandardOutput/Error=journal` + `SyslogIdentifier=daily30k` 전환. setup/update/advise 로그 명령 `journalctl -u daily30k -f` 로 갱신. 회귀 테스트 1건~~
 - [ ] N13: [executor.py:282-299](executor.py#L282-L299) `monitor_orders` 체결 핸들러 개별 try-except (단일 주문 실패 격리)
 - [ ] N14: [main.py:125-141](main.py#L125-L141) `_supervise` `max_restarts` 초과 시 `kill_event.set()` 검증 테스트
 - [ ] B7: 캔들 수집 실패 감지 — 무음 처리되는 API 오류 누적 시 실패율 임계치 넘으면 알림 (screener.py)
+
+**🔴 안전 패치 (2026-05-04 hang 사건 후 신설, 모두 완료)**
+- [x] ~~**N19** (2026-05-04 완료): `BotState.executor_heartbeat` + `_supervise(watchdog_timeout=600, heartbeat_attr)` — executor 단독 hang 감지 및 강제 재시작. 회귀 테스트 2건 (hang/normal)~~
+- [x] ~~**N20** (2026-05-04 완료): `_retry_api(timeout=60.0)` 매개변수 추가 — 각 시도를 `asyncio.wait_for` 로 감싸 ccxt 외부 await hang 방지. 회귀 테스트 2건 (hang/normal)~~
 
 ---
 
@@ -201,6 +206,7 @@ A 와 독립. 로컬 개발 환경에서 진행. **C1 전 반드시 N3+N4 → N1
 
 | 날짜 | ID | 내용 |
 |------|----|------|
+| 2026-05-04 | N12+N19+N20 | **안전 패치 풀 패키지** — 4/28 02:25 KST 이후 6일간 `run_executor` 단독 hang 사건(예외 없음 → `_supervise` 못 잡음) 재발 방지. 사용자 합의 흐름 변경: B3 판단일 5/9 → 5/18+ 연기, 페이퍼 카운트 0일부터 재개. **N12** (로그 가시성): `deploy/daily30k.service` `StandardOutput/Error=journal` + `SyslogIdentifier=daily30k` 전환. systemd-journald 자동 timestamp(microsecond UTC) + auto-rotate(SystemMaxUse 기본 10% disk) + `journalctl --since "Apr 28 02:00"` 시간 쿼리 + `-p err` 에러 필터 가능. setup.sh/update.sh/advise.sh 로그 명령 `tail -f logs/*.log` → `journalctl -u daily30k -f` 갱신. 사후 디버깅 거의 불가능했던 게 이번 사건의 가장 큰 교훈. **N19** (watchdog): `BotState.executor_heartbeat: float = 0.0` 추가 + `_supervise(watchdog_timeout=600.0, heartbeat_attr="executor_heartbeat")` 매개변수 추가. 폴링 주기 `min(60, watchdog_timeout/4)` 로 `asyncio.wait_for(asyncio.shield(task), poll_interval)` 반복 → 600초 무갱신 시 `task.cancel()` + `TimeoutError` 발생 → 기존 except 블록이 잡고 SUPERVISOR_RESTART 페이로드에 `is_watchdog: true` 기록. heartbeat 갱신 위치 2곳: executor 메인 while 루프 첫 줄(매 1초마다 갱신), `recover_state` 매 자산 처리 시작점(testnet 다중 청산 throttle 0.3s × N 동안에도 watchdog 가 hang 으로 오인하지 않도록). recover_state 시그니처 `(exchange, state=None)` 으로 옵셔널 추가, 기존 테스트 호환 유지. **N20** (await timeout): `_retry_api(timeout=60.0)` 매개변수 추가, 각 시도를 `asyncio.wait_for(fn(*args, **kwargs), timeout=timeout)` 으로 감쌈. ccxt 호출 6종(fetch_balance/fetch_ticker/fetch_ohlcv/fetch_open_orders/cancel_order/create_order) 단일 진입점이라 파급 최소. 타임아웃은 일반 예외와 동일하게 다음 시도로 넘어감(지수 백오프 1→2→4초), 최종 시도까지 실패 시 raise. 회귀 테스트 5건: `test_n12_service_uses_journald` (StandardOutput=journal+SyslogIdentifier+append: 잔재 검사), `test_n19_supervise_cancels_hung_executor` (heartbeat 무갱신 → watchdog cancel → 재시작 1회 + is_watchdog 페이로드), `test_n19_supervise_normal_executor_no_false_trigger` (정상 heartbeat → 재시작 0건), `test_n20_retry_api_times_out_on_hung_call` (max_retries=2 모두 timeout → TimeoutError raise), `test_n20_retry_api_normal_call_unaffected` (정상 호출 결과 반환). 전체 테스트 통과 |
 | 2026-04-28 | OPS2 | **Supabase KST View 3개 추가** — 대시보드 `created_at` 컬럼이 UTC `+00` 으로 표시되어 한국 시간 환산 불편 해소. [deploy/schema.sql](deploy/schema.sql) 끝에 `trades_kst` / `equity_snapshots_kst` / `bot_events_kst` 3개 `CREATE OR REPLACE VIEW` 추가, 각 View 가 원본 컬럼 그대로 노출하되 `(created_at AT TIME ZONE 'Asia/Seoul')::timestamp` 변환으로 KST timezone-naive 표시. 봇 base 테이블/persistence/test 영향 없음. 사용자 액션: Supabase SQL Editor 에서 신규 View 부분만 실행(멱등). 봇 재시작 불필요 |
 | 2026-04-28 | D1 | **페이퍼 매매 정상화** — testnet 가동 48시간째 trades 14건 정체 원인 진단 + 본 패치 + 정리. (1) **진단(DIAG1)**: `screener._scan()`/`_pre_filter()` 에 단계별 통과 카운터 + 거래량/ATR Top 샘플 print 추가 → 1사이클(15분) 만에 "USDT 페어 432개 전부 low_volume 컷, testnet 1위 BTC/USDT $82M < MIN_VOLUME_USD $100M" 확정. (2) **부수**: 서버 systemd unit `Environment=PYTHONUNBUFFERED=1` 누락으로 `print()` 가 buffer 에 갇혀 logs/daily30k.out.log 0줄. 서버 즉시 적용 + repo [deploy/daily30k.service](deploy/daily30k.service) 영구 반영. (3) **본 패치**: [config.py](config.py) `MIN_VOLUME_USD = 10_000_000 if MODE == "testnet" else 100_000_000` (testnet BTC/ETH/DOGE/SOL 4개 메이저만 통과, live 진입 시 자동 복원). (4) **정리**: DIAG1 print revert. 결과 검증: 봇이 BTC/USDT 타겟 선정 → 4분 만에 5단 그리드 BUY 전부 체결 → SELL 트리거 작동, trades 14→120건(BUY 38/SELL 82), PnL -1,673원(testnet, 정상 변동). (5) **신규 백로그**: N15(BUY 행 pnl 음수 기록 결함) / N16(WBTC LOT_SIZE 청산 실패) / N17(fetch_open_orders 경고) / N18(testnet 작은 손실로 시장 악화 자동 전환 → 회복 조건 부재) |
 | 2026-04-25 | OPS1b | `deploy/advise.sh` 에 **배포 필요성 판정 로직** 추가. `classify_file()` 헬퍼가 변경 파일을 3등급(**skip** = 런타임 미관여 문서/스킬 / **optional** = 서버 참조 가능한 도구(`advise.sh`/`.env.example`/`test.py`) / **required** = 런타임·systemd·Supabase 로드(`*.py` 대부분 / `requirements.txt` / `deploy/{schema.sql,daily30k.service,setup.sh,update.sh}`)) 으로 분류. 최상단에 🚨/🟢/🔘 배지 출력, 파일별 [필요]/[선택]/[불필요] 태그, 말미 명령 블록 상태별 분기(SKIP→git push만 / OPTIONAL→선택적 `git pull --ff-only` / REQUIRED→update.sh 표준). `[STANDARD]` 섹션도 REQUIRED 일 때만 노출. `skills/deploy-advisor.md` 의 제외 조건 목록 삭제 → "세션에서 1개라도 파일 수정 시 항상 실행, 판정은 스크립트가 담당" 으로 단순화. 사용자 요청 "배포가 필요한지도 알려줘" 반영. 4개 케이스(SKIP / OPTIONAL / REQUIRED-main.py / REQUIRED+TIMING-executor.py) 검증 통과 |

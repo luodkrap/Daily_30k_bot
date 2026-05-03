@@ -92,11 +92,18 @@ async def snapshot_equity(exchange, state: BotState) -> None:
         await notify_error("persistence.equity_snapshot", e)
 
 
-async def _retry_api(fn, *args, max_retries=3, **kwargs):
-    """API 호출 재시도 (지수 백오프: 1s → 2s → 4s)."""
+async def _retry_api(fn, *args, max_retries=3, timeout=60.0, **kwargs):
+    """API 호출 재시도 (지수 백오프: 1s → 2s → 4s).
+
+    N20: 각 시도에 ``asyncio.wait_for(timeout=60.0)`` 을 두어 외부 await 가
+    무한정 hang 되는 것을 방지. ccxt 호출 대부분은 1~10초 내 완료되므로
+    60초는 충분히 넉넉. 타임아웃은 일반 예외와 동일하게 다음 시도로 넘어가며,
+    최종 시도까지 실패 시 raise 되어 호출부 try/except 가 잡는다.
+    이번 패치의 동기는 2026-04-28~05-04 6일간 run_executor 단독 hang 사건
+    (fetch_* 류 await 가 예외 없이 영원히 갇혔을 가능성 가장 높음)."""
     for attempt in range(max_retries):
         try:
-            return await fn(*args, **kwargs)
+            return await asyncio.wait_for(fn(*args, **kwargs), timeout=timeout)
         except Exception:
             if attempt == max_retries - 1:
                 raise
@@ -516,7 +523,7 @@ async def update_market_filter(state: BotState, exchange) -> None:
         await notify_error("MarketFilter", e)
 
 
-async def recover_state(exchange) -> dict:
+async def recover_state(exchange, state: BotState | None = None) -> dict:
     """재시작 시 이전 세션 잔존물(미체결 주문 + 비-USDT 포지션) 정리.
 
     Clean slate 방식: 이전 그리드 상태를 복원하지 않고 전량 정리 후 스캐너가
@@ -526,6 +533,9 @@ async def recover_state(exchange) -> dict:
       - 모든 심볼의 미체결 주문 → cancel
       - USDT·BNB·주요 스테이블코인 외 free 잔고 → {CUR}/USDT 시장가 매도
       - MIN_NOTIONAL 미달(dust) 또는 USDT 페어 없는 자산 → 스킵
+
+    state 인자가 주어지면 N19 watchdog heartbeat 를 갱신하여 다중 청산 시간을
+    hang 으로 오인하지 않도록 한다. 테스트 호환성을 위해 옵셔널.
 
     Returns: {"canceled": int, "liquidated": list[str], "skipped": list[str]}
     """
@@ -566,6 +576,11 @@ async def recover_state(exchange) -> dict:
     free_map = balance.get("free") or {}
 
     for currency, free_amount in free_map.items():
+        # N19: recover_state 다중 청산 throttle (0.3s × N) 도중에도 watchdog 가
+        # hang 으로 오인하지 않도록 매 자산 처리 시작점에서 heartbeat 갱신.
+        if state is not None:
+            state.executor_heartbeat = time.time()
+
         if currency in SKIP_CURRENCIES:
             continue
         if not free_amount or free_amount <= 0:
@@ -678,7 +693,7 @@ async def run_executor(state: BotState, exchange) -> None:
 
     # 재시작 상태 복구 (C2) — 이전 세션 잔존 주문·포지션 정리
     try:
-        await recover_state(exchange)
+        await recover_state(exchange, state)
     except Exception as e:
         await notify_error("Executor.recover_state", e)
         await _log_event("RECOVER_STATE_FAILED", "CRITICAL",
@@ -687,6 +702,9 @@ async def run_executor(state: BotState, exchange) -> None:
         return
 
     while not state.kill_event.is_set():
+        # N19 watchdog heartbeat — _supervise(watchdog_timeout=600) 가 이 값을 폴링.
+        # 외부 await(fetch_*, monitor_orders 등) 어디서 hang 이 걸려도 600초 후 강제 재시작.
+        state.executor_heartbeat = time.time()
         try:
             # ── 1. 킬 이벤트 재확인 ──
             if state.kill_event.is_set():
