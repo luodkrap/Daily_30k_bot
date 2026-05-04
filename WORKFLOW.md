@@ -38,13 +38,13 @@ python main.py
 
 ## 현재 작업
 
-> **🟢 관찰 모드 재개 (Supabase 복구 + N22 패치 작성 완료)** — 5/4 19:26 KST 사용자 재시작으로 Supabase 정상 적재 복귀 (TCP 6543 ESTABLISHED, [DEGRADED] 없음, 30분 사이클 equity_snapshot 확인). N22 패치는 로컬에 코드/테스트 완료, **Lightsail 배포는 다음 세션에서 도울님이 진행**.
+> **🟢 관찰 모드 진입 (N22 배포·검증 완료 2026-05-04 23:36 KST)** — Supabase 정상 적재 + N22 가시성 패치 운영 반영 확인. journal 첫 줄 `[init_db] backend=supabase` 출력 확인됨 (다음 silent fallback 시 즉시 진단 가능). 도울님 손 떼고 페이퍼 누적 시작.
 >
 > 새 세션 첫 액션 후보:
-> - 도울님 측: SSH → `cd ~/Daily_30k_bot && bash deploy/update.sh` → 텔레그램 부팅 메시지 + journal 에 `[init_db] backend=supabase` 출력 확인 (N22 검증)
-> - 배포 후 며칠 누적 점검: Supabase `equity_snapshots` 30분 사이클 / `bot_events` EXECUTOR_START 끊김 없는지 확인
-> - Day 7 (~2026-05-11) 즈음 R1 진행 + SQLite→Supabase 백필 스크립트 같이 작성 (5/4 SQLite 119건 통합용)
-> - **진단 도구 메모리**: `feedback_diagnose_silent_hang` (executor 단독 hang 식별), 그리고 이번 5/4 사건으로 확장: **[DEGRADED] 텔레그램 누락도 가능** → journal 의 `[init_db] backend=...` 가 1차 신호, lsof 의 `trades.db` fd 가 결정타
+> - 며칠 누적 점검: Supabase `equity_snapshots` 30분 사이클 / `bot_events` EXECUTOR_START 끊김 없는지 확인 (`/tmp/db_check.py` 또는 동등 쿼리)
+> - Day 7 (~2026-05-11) 즈음 R1 진행 + N24 백필 스크립트 같이 작성 (5/4 02:43~19:26 SQLite 119건을 Supabase 로 통합)
+> - Day 14 (~2026-05-18) B3 판단 (MODE=live 전환 여부)
+> - **진단 도구 메모리**: `feedback_diagnose_silent_hang` (silent hang + silent fallback 진단법, journal=UTC vs Supabase view=KST 시간대 혼동 주의)
 
 <!--
 작업 중일 때 아래 형식으로 채워넣을 것:
