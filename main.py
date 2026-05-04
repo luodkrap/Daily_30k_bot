@@ -22,6 +22,7 @@ main.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 import asyncio
+import sys
 import ccxt.async_support as ccxt_async
 import config
 from config import BINANCE_API_KEY, BINANCE_SECRET_KEY, MODE
@@ -211,8 +212,14 @@ async def main() -> None:
     try:
         await init_session()
         backend_used = await persistence.init_db()
+        # N22 (2026-05-04 사건 후): 부팅 시 backend 선택 결과를 journal 로 무조건 가시화.
+        # 5/4 02:43 부팅 시 Supabase 일시 끊김으로 fallback 발동했으나 [DEGRADED]
+        # 텔레그램 알림이 일시 NetworkError 로 누락 → 16시간 후에야 발견. journal 에
+        # 흔적 남기는 것이 가장 신뢰성 높은 사후 진단 수단.
+        print(f"[init_db] backend={backend_used}", flush=True)
         if backend_used == "sqlite_fallback":
             reason = persistence.get_fallback_reason() or "unknown"
+            print(f"[init_db] FALLBACK reason={reason}", file=sys.stderr, flush=True)
             await send(
                 f"[DEGRADED] Supabase 연결 실패 → SQLite fallback 로 기동\n"
                 f"사유: {reason}\n"

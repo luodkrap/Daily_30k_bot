@@ -145,6 +145,12 @@
 
 - [x] 🤖 ~~**N19** (2026-05-04 완료): `BotState.executor_heartbeat: float = 0.0` 추가 + `_supervise(watchdog_timeout=600.0, heartbeat_attr="executor_heartbeat")` 매개변수 추가 — executor 만 600초 무갱신 시 task 강제 cancel → TimeoutError 변환 → 기존 재시작 경로 재사용 + SUPERVISOR_RESTART 페이로드 `is_watchdog: true`. heartbeat 갱신 위치 2곳 (executor 메인 루프 1초마다 / recover_state 매 자산 처리 시작점). recover_state 시그니처 `(exchange, state=None)` 옵셔널 추가. 회귀 테스트 2건~~
 - [x] 🤖 ~~**N20** (2026-05-04 완료): `_retry_api(timeout=60.0)` 매개변수 추가 — 각 시도를 `asyncio.wait_for` 로 감싸 ccxt 외부 await(fetch_balance/fetch_ticker/fetch_ohlcv/fetch_open_orders/cancel_order/create_order)이 영원히 hang 되지 않도록. 타임아웃은 일반 예외와 동일하게 다음 시도로 넘어감(지수 백오프 1→2→4초). 회귀 테스트 2건~~
+- [x] 🤖 ~~**N22** (2026-05-04 완료): `main.py` 의 `init_db()` 결과를 무조건 stdout 으로 `print(f"[init_db] backend={backend_used}")`, fallback 시 stderr 로 `print(f"[init_db] FALLBACK reason={reason}")` 출력. 5/4 02:43 KST 부팅 시 Supabase 일시 끊김 → SQLite fallback 발동했으나 [DEGRADED] 텔레그램 알림이 일시 NetworkError 로 누락 → 16시간 후 도울님 "DB에 데이터 잘 쌓이고 있어?" 질문으로 발견된 사건의 처방. 텔레그램은 외부 의존 (네트워크/dedup) 으로 신뢰성 한계, journal 은 systemd 보장 + N12 이미 timestamp/auto-rotate 확보. 회귀 테스트 1건 (정적 검사). 다음 세션에서 Lightsail 배포 필요~~
+
+**🟡 5/4 사건 후속 (2026-05-04 추가)**
+
+- [ ] 🤖 N23 (Medium): `init_db()` fallback 발생 시 30분마다 백그라운드 task 가 Supabase 재연결 시도 → 성공 시 `_backend` 싱글톤을 SupabaseBackend 로 교체. 5/4 사건처럼 16시간 SQLite 갇혀있는 상황 자동 회복용. R1 진행 시점에 같이 작성. 주의: 교체 시 진행 중 write 와의 race condition 고려 (asyncio.Lock 또는 atomic 교체)
+- [ ] 🤖 N24 (Medium): `reports/backfill_sqlite.py` — 5/4 02:43~19:26 SQLite 119건을 Supabase 로 옮기는 일회성 백필. 중복 INSERT 방지 (ts + symbol + side 키로 ON CONFLICT DO NOTHING). R1 분석 직전 1회 사용. trades / equity_snapshots / bot_events 3 테이블 대상
 
 **페이퍼 운영 중 발견 (2026-04-28 D1 완료 후 추가)**
 

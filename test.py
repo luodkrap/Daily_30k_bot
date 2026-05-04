@@ -1901,6 +1901,27 @@ def test_n20_retry_api_normal_call_unaffected():
     print("  [PASS] n20_retry_api_normal_unaffected: timeout 적용해도 정상 호출 영향 없음")
 
 
+def test_n22_init_db_result_visible_in_journal():
+    """N22: main.py 가 init_db 결과를 stdout/stderr 로 무조건 출력 (journal 가시화).
+
+    2026-05-04 사건: 부팅 시 Supabase 일시 끊김으로 SQLite fallback 발동했으나
+    [DEGRADED] 텔레그램 알림이 일시 NetworkError 로 누락 → 16시간 후에야 발견.
+    텔레그램은 외부 의존이라 신뢰성 한계가 있음. journal 에 흔적 남기는 것이
+    가장 신뢰성 높은 사후 진단 수단."""
+    from pathlib import Path
+
+    main_path = Path(__file__).parent / "main.py"
+    content = main_path.read_text()
+    assert 'print(f"[init_db] backend=' in content, \
+        "init_db 결과 stdout 출력 누락 — journal 에 backend 선택 흔적 안 남음"
+    assert '[init_db] FALLBACK reason=' in content, \
+        "fallback 사유 stderr 출력 누락 — 텔레그램 누락 시 사후 진단 불가"
+    assert "file=sys.stderr" in content, \
+        "fallback 사유는 stderr 로 가야 journal -p err 로 빠르게 필터 가능"
+    assert "import sys" in content, "sys import 누락"
+    print("  [PASS] n22_init_db_result_visible_in_journal: backend 선택 결과 journal 가시화")
+
+
 def test_n2_notifier_failure_also_swallowed():
     """N2: notifier 자체 장애(텔레그램 다운 등)에도 persistence 공개 함수는 예외 미전파."""
     import persistence
@@ -2060,6 +2081,10 @@ if __name__ == "__main__":
         test_n20_retry_api_times_out_on_hung_call()
         test_n20_retry_api_normal_call_unaffected()
         print("Phase 7 N12+N19+N20 안전 패치 단위 테스트 통과!")
+
+        print("\n=== Phase 7: N22 init_db 결과 journal 가시화 ===")
+        test_n22_init_db_result_visible_in_journal()
+        print("Phase 7 N22 가시성 패치 단위 테스트 통과!")
 
     if mode == "unit":
         # 기본 실행: 모든 오프라인 단위 테스트 (Phase 3/4 + bugfix + Phase 6/7).

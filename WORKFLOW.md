@@ -9,10 +9,10 @@
 
 | 항목 | 값 |
 |------|----|
-| **현재 Phase** | **Phase 7 운영 — 관찰 모드 (재시작 2026-05-04 01:47 KST)**. **사건: 4/28 02:25 KST 이후 6일간 `run_executor` 코루틴 단독 hang** (예외 없음 → `_supervise`가 못 잡음 → SUPERVISOR_RESTART 0건). 5/4 01:46 UTC 수동 `systemctl restart` 로 매매 재개, 청산 8건 + BTC 그리드 정상 셋업 확인. **사용자 합의 변경 (2026-05-04): 안전 패치 풀 패키지 (N12 로그+N19 watchdog+N20 timeout) → 페이퍼 누적 재개 → 👤 B3 판단 5/9 → 5/18+ 연기**. 근거: hang 재발 시 또 페이퍼 데이터 손실, 안전망 마련 후 청정 데이터 누적이 합리적 |
-| **마지막 점검** | 2026-05-04 (executor hang 진단 + 수동 재시작 + N12/N19/N20 풀 패키지 합의) |
+| **현재 Phase** | **Phase 7 운영 — 관찰 모드 (Supabase 복구 후 재개, 2026-05-04 19:26 KST)**. **사건 2: 5/4 02:43 KST 부팅 시 Supabase 일시 끊김 → SQLite fallback 발동했으나 [DEGRADED] 텔레그램 알림이 일시 NetworkError 로 누락 → 16시간 후 발견** (도울님 "DB에 데이터 잘 쌓이고 있어?" 질문이 도화선). 데이터 손실 0건 (5/4 02:43~19:26 분 119건은 서버 SQLite 에 안전, 19:26 재시작 후 Supabase 정상 적재). **N22 추가**: init_db 결과 journal 가시화 (다음 fallback 시 즉시 진단). B3 판단일은 N12/N19/N20 사건 합의 기준 5/18+ 유지 |
+| **마지막 점검** | 2026-05-04 (Supabase fallback 사건 진단 + 사용자 재시작 복구 + N22 가시성 패치) |
 | **점검 누적** | 4/3 |
-| **남은 블로커** | 없음 — 매매 사이클 재가동 (5/4 01:47 EXECUTOR_START 확인, 그리드 BTC/USDT 배치 완료) |
+| **남은 블로커** | 없음 — 매매 사이클 재가동 + Supabase 정상 적재 (5/4 19:26 EXECUTOR_START 이벤트 + 30분 사이클 equity_snapshot 확인) |
 | **테스트 상태** | 전체 통과 (`python test.py` 기본 실행으로 Phase 3/4 + bugfix + Phase 6/7 전부 커버) |
 | **로드맵 플랜** | `~/.claude/plans/streamed-launching-cascade.md` (2026-04-22 승인 — 역할 분담·타임라인) |
 
@@ -38,13 +38,13 @@ python main.py
 
 ## 현재 작업
 
-> **🟢 관찰 모드 재개 (N12+N19+N20 패치 배포 후)** — 코드/테스트 완료 (2026-05-04 로컬). 도울님이 Lightsail 서버에 `bash deploy/update.sh` 로 배포 후 페이퍼 누적 재시작.
+> **🟢 관찰 모드 재개 (Supabase 복구 + N22 패치 작성 완료)** — 5/4 19:26 KST 사용자 재시작으로 Supabase 정상 적재 복귀 (TCP 6543 ESTABLISHED, [DEGRADED] 없음, 30분 사이클 equity_snapshot 확인). N22 패치는 로컬에 코드/테스트 완료, **Lightsail 배포는 다음 세션에서 도울님이 진행**.
 >
 > 새 세션 첫 액션 후보:
-> - 도울님 측: SSH → `cd ~/Daily_30k_bot && bash deploy/update.sh` → 텔레그램 부팅 메시지 + recover_state 청산 확인
-> - 배포 후 며칠 누적 후 점검: Supabase `equity_snapshots` 30분 사이클이 끊기지 않고 잘 적재되는지 확인 (이번 안전 패치의 핵심 검증 지표)
-> - Day 7 (~2026-05-11) 즈음 R1 진행
-> - **새로 알게 된 진단 도구**: 향후 봇 정상 작동 오인이 의심되면 → `feedback_diagnose_silent_hang` 메모 참조 (Supabase EXECUTOR_START·equity_snapshot 시각이 진짜 신호)
+> - 도울님 측: SSH → `cd ~/Daily_30k_bot && bash deploy/update.sh` → 텔레그램 부팅 메시지 + journal 에 `[init_db] backend=supabase` 출력 확인 (N22 검증)
+> - 배포 후 며칠 누적 점검: Supabase `equity_snapshots` 30분 사이클 / `bot_events` EXECUTOR_START 끊김 없는지 확인
+> - Day 7 (~2026-05-11) 즈음 R1 진행 + SQLite→Supabase 백필 스크립트 같이 작성 (5/4 SQLite 119건 통합용)
+> - **진단 도구 메모리**: `feedback_diagnose_silent_hang` (executor 단독 hang 식별), 그리고 이번 5/4 사건으로 확장: **[DEGRADED] 텔레그램 누락도 가능** → journal 의 `[init_db] backend=...` 가 1차 신호, lsof 의 `trades.db` fd 가 결정타
 
 <!--
 작업 중일 때 아래 형식으로 채워넣을 것:
@@ -67,6 +67,7 @@ python main.py
 
 | 날짜 | 파일 | 변경 이유 |
 |------|------|-----------|
+| 2026-05-04 | [main.py](main.py), [test.py](test.py) | **N22 가시성 패치** — 5/4 02:43 KST 부팅 시 Supabase 일시 끊김 → SQLite fallback 발동했으나 [DEGRADED] 텔레그램 알림이 일시 NetworkError 로 누락 → 16시간 후 도울님 "DB에 데이터 잘 쌓이고 있어?" 질문으로 발견. 데이터 손실 0건이지만 **fallback 발생 자체가 16시간 무인지** 가 진짜 위험. 처방: `init_db()` 결과를 무조건 stdout 으로 print (`[init_db] backend=...`), fallback 시 stderr 로 사유 (`[init_db] FALLBACK reason=...`). 텔레그램 send 는 외부 의존 (네트워크/dedup) 이라 신뢰성 한계, journal 은 systemd 가 보장 (N12 패치로 이미 timestamp + auto-rotate 확보). main.py 에 `import sys` 추가 + 2줄 print 삽입. 회귀 테스트 1건 (`test_n22_init_db_result_visible_in_journal`: 정적 검사로 print 패턴 검증). 전체 테스트 통과 |
 | 2026-05-04 | [deploy/daily30k.service](deploy/daily30k.service), [deploy/setup.sh](deploy/setup.sh), [deploy/update.sh](deploy/update.sh), [deploy/advise.sh](deploy/advise.sh), [shared_state.py](shared_state.py), [main.py](main.py), [executor.py](executor.py), [test.py](test.py) | **N12+N19+N20 안전 패치 풀 패키지** — 4/28~5/4 6일 `run_executor` 단독 hang 사건(예외 없음 → `_supervise` 못 잡음 → SUPERVISOR_RESTART 0건) 재발 방지. **N12**: systemd unit `StandardOutput/Error=journal` + `SyslogIdentifier=daily30k` 전환 (timestamp 자동 부여 + auto-rotate + `journalctl --since` 시간쿼리). 사후 디버깅 가능성 확보가 가장 큰 동기. setup.sh/update.sh/advise.sh 로그 명령 `tail -f logs/*.log` → `journalctl -u daily30k -f` 갱신. **N19**: `BotState.executor_heartbeat` 추가 + `_supervise(watchdog_timeout, heartbeat_attr)` 매개변수 추가 — executor 만 600초 무갱신 시 task 강제 cancel → TimeoutError 변환 → 기존 재시작 경로 재사용 + SUPERVISOR_RESTART 페이로드 `is_watchdog: true`. heartbeat 갱신 위치 2곳: executor 메인 루프 매 iteration 첫 줄, recover_state 매 자산 처리 시작점(testnet 다중 청산 throttle 시간 보호). **N20**: `_retry_api(timeout=60.0)` 매개변수 추가 — 각 시도를 `asyncio.wait_for` 로 감싸 ccxt 외부 await(fetch_balance/fetch_ticker/fetch_ohlcv/fetch_open_orders/cancel_order/create_order)이 영원히 hang 되지 않도록. 타임아웃은 일반 예외와 동일하게 다음 시도로 넘어감. 회귀 테스트 5건 (`test_n12_service_uses_journald`, `test_n19_supervise_cancels_hung_executor`, `test_n19_supervise_normal_executor_no_false_trigger`, `test_n20_retry_api_times_out_on_hung_call`, `test_n20_retry_api_normal_call_unaffected`). 전체 테스트 통과 |
 | 2026-04-28 | [deploy/schema.sql](deploy/schema.sql) | **OPS2**: Supabase 대시보드 KST 조회 편의 — `trades_kst` / `equity_snapshots_kst` / `bot_events_kst` 3개 View 추가. `created_at TIMESTAMPTZ` 가 Postgres 표준대로 UTC 저장되어 대시보드에 `+00` offset 으로 표시되던 것을 `(created_at AT TIME ZONE 'Asia/Seoul')::timestamp` 변환 View 로 KST 표시. 멱등 `CREATE OR REPLACE VIEW`. 봇 코드/base 테이블 영향 없음 |
 | 2026-04-28 | [config.py](config.py), [deploy/daily30k.service](deploy/daily30k.service), [screener.py](screener.py) | **D1**: 페이퍼 운영 48시간째 trades 14건 정체(전부 recover SELL) → 진단 결과 `testnet 마켓 거래량이 mainnet 대비 1/100` 으로 `MIN_VOLUME_USD=$100M` 임계값을 어떤 코인도 못 넘김(testnet BTC/USDT 24h $82M). 본 패치: `MIN_VOLUME_USD = 10_000_000 if MODE == "testnet" else 100_000_000` 자동 분기. 부수: systemd unit `Environment=PYTHONUNBUFFERED=1` 영구 반영(서버 진단 중 발견된 logger buffer 문제). 진단용 DIAG1 print(_scan/_pre_filter 단계별 컷 분포)는 추가→revert 사이클로 정리. 결과: BTC/USDT 타겟 선정 정상, 4분 만에 그리드 5단 BUY 체결, trades 14→120건(BUY 38/SELL 82, 누적 PnL -1,673원 testnet). 신규 발견 이슈 4건은 N15~N18 백로그 등록 |
@@ -150,6 +151,11 @@ python main.py
 **🔴 안전 패치 (2026-05-04 hang 사건 후 신설, 모두 완료)**
 - [x] ~~**N19** (2026-05-04 완료): `BotState.executor_heartbeat` + `_supervise(watchdog_timeout=600, heartbeat_attr)` — executor 단독 hang 감지 및 강제 재시작. 회귀 테스트 2건 (hang/normal)~~
 - [x] ~~**N20** (2026-05-04 완료): `_retry_api(timeout=60.0)` 매개변수 추가 — 각 시도를 `asyncio.wait_for` 로 감싸 ccxt 외부 await hang 방지. 회귀 테스트 2건 (hang/normal)~~
+- [x] ~~**N22** (2026-05-04 완료): `main.py` 의 `init_db()` 결과를 무조건 stdout `print("[init_db] backend=...")` + fallback 시 stderr `print("[init_db] FALLBACK reason=...")` 으로 journal 가시화. 5/4 02:43 KST Supabase fallback 사건이 [DEGRADED] 텔레그램 누락으로 16시간 무인지된 사건의 처방. 회귀 테스트 1건 (정적 검사). 다음 세션에서 배포 필요~~
+
+**🟡 후속 개선 (5/4 사건 추가 백로그)**
+- [ ] N23 (Med): `init_db()` fallback 발생 시 30분마다 Supabase 재연결 시도 (싱글톤 자동 복구). 5/4 사건처럼 16시간 SQLite 갇혀있는 상황 자동 회복용. R1 진행 시점에 같이 작성
+- [ ] N24 (Med): SQLite → Supabase 백필 스크립트 (`reports/backfill_sqlite.py`) — 5/4 02:43~19:26 SQLite 119건을 Supabase 로 옮겨 통합 분석. R1 분석 직전에 1회 사용
 
 ---
 
@@ -206,6 +212,7 @@ A 와 독립. 로컬 개발 환경에서 진행. **C1 전 반드시 N3+N4 → N1
 
 | 날짜 | ID | 내용 |
 |------|----|------|
+| 2026-05-04 | N22 | **init_db 결과 journal 가시화** — 5/4 02:43 KST Supabase 일시 끊김 → SQLite fallback 발동했으나 [DEGRADED] 텔레그램 알림이 일시 NetworkError 로 누락 → 16시간 후에야 도울님 "DB에 데이터 잘 쌓이고 있어?" 질문으로 발견된 사건 처방. 데이터 손실 0건 (5/4 02:43~19:26 분 119건은 서버 SQLite 에 안전, 19:26 사용자 재시작 후 Supabase 정상 적재). 진단 시 결정타였던 정보: (1) `lsof -p $PID | grep trades.db` 의 fd 15u → SqliteBackend 사용 확정, (2) `lsof | grep "->.*:6543"` 의 ESTABLISHED → Supabase Pooler 정상 연결 확정, (3) `journalctl --since` UTC 표기 vs Supabase view KST 표기 시간대 혼동이 조기 hang 오진의 원인이었음. 처방: [main.py](main.py) `import sys` + `init_db()` 결과 후 `print(f"[init_db] backend={backend_used}", flush=True)` + fallback 시 `print(f"[init_db] FALLBACK reason={reason}", file=sys.stderr, flush=True)`. 텔레그램은 외부 의존 (네트워크/dedup) 으로 신뢰성 한계, journal 은 systemd 보장 + N12 패치로 이미 timestamp/auto-rotate 확보. 회귀 테스트 1건 (`test_n22_init_db_result_visible_in_journal`: 정적 검사 — print 패턴 + sys import + stderr 분리 검증). 전체 테스트 통과 |
 | 2026-05-04 | N12+N19+N20 | **안전 패치 풀 패키지** — 4/28 02:25 KST 이후 6일간 `run_executor` 단독 hang 사건(예외 없음 → `_supervise` 못 잡음) 재발 방지. 사용자 합의 흐름 변경: B3 판단일 5/9 → 5/18+ 연기, 페이퍼 카운트 0일부터 재개. **N12** (로그 가시성): `deploy/daily30k.service` `StandardOutput/Error=journal` + `SyslogIdentifier=daily30k` 전환. systemd-journald 자동 timestamp(microsecond UTC) + auto-rotate(SystemMaxUse 기본 10% disk) + `journalctl --since "Apr 28 02:00"` 시간 쿼리 + `-p err` 에러 필터 가능. setup.sh/update.sh/advise.sh 로그 명령 `tail -f logs/*.log` → `journalctl -u daily30k -f` 갱신. 사후 디버깅 거의 불가능했던 게 이번 사건의 가장 큰 교훈. **N19** (watchdog): `BotState.executor_heartbeat: float = 0.0` 추가 + `_supervise(watchdog_timeout=600.0, heartbeat_attr="executor_heartbeat")` 매개변수 추가. 폴링 주기 `min(60, watchdog_timeout/4)` 로 `asyncio.wait_for(asyncio.shield(task), poll_interval)` 반복 → 600초 무갱신 시 `task.cancel()` + `TimeoutError` 발생 → 기존 except 블록이 잡고 SUPERVISOR_RESTART 페이로드에 `is_watchdog: true` 기록. heartbeat 갱신 위치 2곳: executor 메인 while 루프 첫 줄(매 1초마다 갱신), `recover_state` 매 자산 처리 시작점(testnet 다중 청산 throttle 0.3s × N 동안에도 watchdog 가 hang 으로 오인하지 않도록). recover_state 시그니처 `(exchange, state=None)` 으로 옵셔널 추가, 기존 테스트 호환 유지. **N20** (await timeout): `_retry_api(timeout=60.0)` 매개변수 추가, 각 시도를 `asyncio.wait_for(fn(*args, **kwargs), timeout=timeout)` 으로 감쌈. ccxt 호출 6종(fetch_balance/fetch_ticker/fetch_ohlcv/fetch_open_orders/cancel_order/create_order) 단일 진입점이라 파급 최소. 타임아웃은 일반 예외와 동일하게 다음 시도로 넘어감(지수 백오프 1→2→4초), 최종 시도까지 실패 시 raise. 회귀 테스트 5건: `test_n12_service_uses_journald` (StandardOutput=journal+SyslogIdentifier+append: 잔재 검사), `test_n19_supervise_cancels_hung_executor` (heartbeat 무갱신 → watchdog cancel → 재시작 1회 + is_watchdog 페이로드), `test_n19_supervise_normal_executor_no_false_trigger` (정상 heartbeat → 재시작 0건), `test_n20_retry_api_times_out_on_hung_call` (max_retries=2 모두 timeout → TimeoutError raise), `test_n20_retry_api_normal_call_unaffected` (정상 호출 결과 반환). 전체 테스트 통과 |
 | 2026-04-28 | OPS2 | **Supabase KST View 3개 추가** — 대시보드 `created_at` 컬럼이 UTC `+00` 으로 표시되어 한국 시간 환산 불편 해소. [deploy/schema.sql](deploy/schema.sql) 끝에 `trades_kst` / `equity_snapshots_kst` / `bot_events_kst` 3개 `CREATE OR REPLACE VIEW` 추가, 각 View 가 원본 컬럼 그대로 노출하되 `(created_at AT TIME ZONE 'Asia/Seoul')::timestamp` 변환으로 KST timezone-naive 표시. 봇 base 테이블/persistence/test 영향 없음. 사용자 액션: Supabase SQL Editor 에서 신규 View 부분만 실행(멱등). 봇 재시작 불필요 |
 | 2026-04-28 | D1 | **페이퍼 매매 정상화** — testnet 가동 48시간째 trades 14건 정체 원인 진단 + 본 패치 + 정리. (1) **진단(DIAG1)**: `screener._scan()`/`_pre_filter()` 에 단계별 통과 카운터 + 거래량/ATR Top 샘플 print 추가 → 1사이클(15분) 만에 "USDT 페어 432개 전부 low_volume 컷, testnet 1위 BTC/USDT $82M < MIN_VOLUME_USD $100M" 확정. (2) **부수**: 서버 systemd unit `Environment=PYTHONUNBUFFERED=1` 누락으로 `print()` 가 buffer 에 갇혀 logs/daily30k.out.log 0줄. 서버 즉시 적용 + repo [deploy/daily30k.service](deploy/daily30k.service) 영구 반영. (3) **본 패치**: [config.py](config.py) `MIN_VOLUME_USD = 10_000_000 if MODE == "testnet" else 100_000_000` (testnet BTC/ETH/DOGE/SOL 4개 메이저만 통과, live 진입 시 자동 복원). (4) **정리**: DIAG1 print revert. 결과 검증: 봇이 BTC/USDT 타겟 선정 → 4분 만에 5단 그리드 BUY 전부 체결 → SELL 트리거 작동, trades 14→120건(BUY 38/SELL 82), PnL -1,673원(testnet, 정상 변동). (5) **신규 백로그**: N15(BUY 행 pnl 음수 기록 결함) / N16(WBTC LOT_SIZE 청산 실패) / N17(fetch_open_orders 경고) / N18(testnet 작은 손실로 시장 악화 자동 전환 → 회복 조건 부재) |
