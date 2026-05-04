@@ -4,7 +4,8 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![Exchange](https://img.shields.io/badge/Exchange-Binance-yellow)
-![Status](https://img.shields.io/badge/Phase-6%20%28Paper%20Trading%29-orange)
+![Status](https://img.shields.io/badge/Phase-7%20%28Observation%20Mode%29-green)
+![Deploy](https://img.shields.io/badge/Deploy-Lightsail%20%2B%20Supabase-purple)
 
 ---
 
@@ -33,7 +34,7 @@
 - 인간의 감성 배제, 24시간 완전 무인 운영
 - 그리드 매매로 횡보장에서 수익, 4중 안전망으로 손실 차단
 
-**현재 상태:** Phase 6 — 페이퍼 트레이딩 인프라 완료, testnet 실연결 검증 단계
+**현재 상태:** Phase 7 — Lightsail VPS + Supabase 원격 적재 운영, **관찰 모드(페이퍼 누적)** 진행 중. 14일 누적 후 MODE=live 전환 판단.
 
 ---
 
@@ -63,10 +64,15 @@
             └─────┬──────┘
                   │
             ┌─────▼──────┐
-            │ trades.db  │
-            │ (SQLite)   │
+            │ persistence│
+            │  (Supabase │
+            │   primary, │
+            │   SQLite   │
+            │  fallback) │
             └────────────┘
 ```
+
+**저장소 이중화 (Phase 7):** 1차 Supabase Postgres 원격 적재 → 연결 실패 시 SQLite fallback + 텔레그램 `[DEGRADED]` 알림. 부팅 시 journal 첫 줄 `[init_db] backend=supabase|sqlite` 로 현재 모드 명시 (silent fallback 재발 방지, N22 패치).
 
 **공유 상태 (`BotState`):**
 
@@ -232,8 +238,10 @@ Daily_30k_bot/
 ├── notifier.py      — 텔레그램 비동기 알림 (60s dedup + 1s 스로틀)
 ├── screener.py      — 스캐너 엔진 (5단계 필터 + 점수 정렬)
 ├── executor.py      — 트레이딩 엔진 (GridEngine + run_executor + 200MA 필터)
-├── persistence.py   — SQLite trades.db 체결 로그 (live/testnet 분리)
-├── test.py          — 단위·통합 테스트 (43개 케이스)
+├── persistence.py   — Supabase 1차 / SQLite fallback 체결·이벤트 로그
+├── test.py          — 단위·통합 테스트
+├── deploy/          — Lightsail 배포 스크립트 (setup.sh, update.sh, daily30k.service, schema.sql)
+├── skills/          — 온디맨드 운영 가이드 (auto-checkpoint, conventions, deploy-advisor 등)
 ├── .env             — 환경변수 (git에 포함되지 않음)
 └── requirements.txt — 패키지 목록
 ```
@@ -270,10 +278,12 @@ Daily_30k_bot/
 | Phase 3  | 스캐너 엔진 (5단계 필터, 점수 정렬)             | 완료        |
 | Phase 4  | 그리드 엔진 (GridEngine, 동적 스위칭)           | 완료        |
 | Phase 5  | 리스크 관리 (손절, 킬 스위치, 시장 필터)        | 완료        |
-| Phase 6  | 페이퍼 트레이딩 인프라 (MODE 분기, SQLite 로그) | 인프라 완료 |
-| Phase 6a | testnet 소액 실거래 검증                        | 진행 예정   |
+| Phase 6  | 페이퍼 트레이딩 인프라 (MODE 분기, SQLite 로그) | 완료        |
+| Phase 6a | testnet 소액 실거래 검증                        | 완료        |
+| Phase 7  | Lightsail VPS + systemd + Supabase 원격 적재    | 완료        |
+| Phase 7+ | 안전 패치 (N12/N19/N20 hang 방지, N22 가시성)   | 완료        |
+| **관찰 모드** | 페이퍼 14일 누적 → R1 점검 → B3 라이브 판단 | **진행 중** (~2026-05-18) |
 | Phase 6b | 백테스트 (1~3년 데이터)                         | 미착수      |
-| Phase 7  | VPS 배포 + systemd 자동 재시작                  | 미착수      |
 
 ---
 
@@ -294,4 +304,5 @@ Daily_30k_bot/
 **운영 환경:**
 
 - 안정적인 인터넷 연결이 필요합니다. 네트워크 단절 시 미체결 주문이 남을 수 있습니다.
-- VPS 또는 24시간 가동 가능한 서버에서 운영하는 것을 권장합니다.
+- VPS 또는 24시간 가동 가능한 서버에서 운영하는 것을 권장합니다 (현재 운영 환경: AWS Lightsail + systemd `daily30k.service`, 데이터 적재는 Supabase Postgres).
+- Supabase 연결이 끊기면 자동으로 SQLite 로 fallback 되며 텔레그램 `[DEGRADED]` 알림이 발송됩니다. journal 의 `[init_db] backend=...` 줄로 현재 적재 백엔드를 즉시 확인하세요.
