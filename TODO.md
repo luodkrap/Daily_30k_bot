@@ -152,6 +152,11 @@
 - [ ] 🤖 N23 (Medium): `init_db()` fallback 발생 시 30분마다 백그라운드 task 가 Supabase 재연결 시도 → 성공 시 `_backend` 싱글톤을 SupabaseBackend 로 교체. 5/4 사건처럼 16시간 SQLite 갇혀있는 상황 자동 회복용. R1 진행 시점에 같이 작성. 주의: 교체 시 진행 중 write 와의 race condition 고려 (asyncio.Lock 또는 atomic 교체)
 - [ ] 🤖 N24 (Medium): `reports/backfill_sqlite.py` — 5/4 02:43~19:26 SQLite 119건을 Supabase 로 옮기는 일회성 백필. 중복 INSERT 방지 (ts + symbol + side 키로 ON CONFLICT DO NOTHING). R1 분석 직전 1회 사용. trades / equity_snapshots / bot_events 3 테이블 대상
 
+**🔴 5/8 사건 신규 결함 (2026-05-08 추가) — 진단 미완**
+
+- [ ] 🤖 **N25 (High)**: **engine idle 결함** — 5/5 16:48 KST 마지막 SELL pnl=-30,640 KRW 후 73시간 매매 0건. 봇 프로세스 PID 37768 정상(NRestarts=0, CPU 0.1%, asyncio epoll 대기), screener 매 15분 "타겟 선정" 정상, equity_snapshot 30분 사이클 정상, 그러나 **trades 0건 + KILL_SWITCH·DAILY_STOP 흔적 0건**. 메인 루프 break 안 했는데 매매만 정지 = engine 객체가 어떤 분기에 갇힌 것 확정. [executor.py:704-783](executor.py#L704-L783) 분기 중 정확한 위치는 미확정. 가설: (a) engine 의 buy/sell 주문 모두 비었지만 `if engine is None` 분기 못 타서 `setup_grid` 재호출 안 됨, (b) N18 시장 악화 자동 전환 후 회복 차단(다만 MARKET_FILTER 이벤트 0건이라 가능성 낮음). 처방 후보: (1) **재발 시 `py-spy dump --pid <PID>` stack trace 확보 우선** → 실제 분기 확정 후 재현 테스트, (2) "마지막 거래 시각" watchdog 추가 (예: 4시간 무거래 + screener 타겟 선정 진행 중 시 강제 regrid 또는 engine=None reset). 5/8 18:48 재시작으로 즉시 복구됐으나 결함 자체는 미해결, B3 전환 차단 조건
+- [ ] 🤖 **N26 (Medium)**: **DAILY_STOP 4초 spam 결함** — 5/5 03:35~08:59 KST 5.5시간 동안 같은 메시지 4,679건 기록 (4초 간격). [executor.py:734-745](executor.py#L734-L745) `should_stop_profit` 분기는 `_log_event` + `kill_event.set()` + `break` 인데 break 가 안 먹히는 강력한 증거. 5/5 09:00 KST(=UTC 자정)에 자동 종료된 점으로 봐 reset_daily 가 should_stop_profit 플래그를 클리어하는 것은 맞음. 처방 후보: outer `while not state.kill_event.is_set()` 루프 직전 line 710 `if state.kill_event.is_set(): break` 리체크 분기 작동 검증 + 재현 테스트(state.daily_pnl 양수 + should_stop_profit=True 진입 시 DAILY_STOP 1회만 기록)
+
 **페이퍼 운영 중 발견 (2026-04-28 D1 완료 후 추가)**
 
 - [ ] 🤖 **N15** (Medium): BUY 행 pnl 이 -149원 등 음수로 기록됨 (Supabase trades 확인). 매수는 PnL 0이 정상. `_handle_buy_fill` 또는 `setup_grid` 의 `_log_trade("BUY", ...)` 호출부에서 잘못된 인자 전달 의심. 회귀 테스트 1건 + 호출부 점검
