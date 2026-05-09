@@ -9,10 +9,10 @@
 
 | 항목 | 값 |
 |------|----|
-| **현재 Phase** | **Phase 7 운영 — N26 결함 패치 완료, 배포 대기 (2026-05-09 14:00 KST)**. **사건 4: 5/8 18:48 재시작 5시간 만에 N26 spam 결함 재발** (5/9 00:00:28~00:02:34 KST DAILY_STOP 이벤트 4초 간격 3,562건 누적, 그 후 약 14시간 매매·equity heartbeat 정지). 원인 100% 확정: [executor.py:734-745](executor.py#L734-L745) DAILY_STOP 분기 + [executor.py:721-732](executor.py#L721-L732) KILL_SWITCH 분기에서 `engine.emergency_sell` ccxt 예외가 outer `except Exception` 에 잡혀 `state.kill_event.set()` / `break` 도달 못 함. **패치 적용**: 두 분기 모두 `kill_event.set()` 을 emergency_sell 보다 **먼저** 호출 + emergency_sell 자체를 try/except 로 감싸 break 도달 보장. 회귀 테스트 2건 (`test_n26_daily_stop_no_spam`, `test_n26_kill_switch_no_spam`) 추가, 전체 단위 테스트 통과. **배포 대기 중** — 도울님이 서버 재시작 + `bash deploy/update.sh` 실행 시 활성화. **B3 판단일 5/22+ 연기 유지**. |
-| **마지막 점검** | 2026-05-09 (N26 결함 재발 진단 + executor 패치 + 회귀 테스트 2건 + 배포 가이드 출력) |
+| **현재 Phase** | **Phase 7 운영 — N26 패치 배포 완료, 관찰 모드 재진입 (2026-05-09 21:23 KST 재시작)**. 5/9 commit `92fba8d` 서버 반영 → `bash deploy/update.sh` 통과 → PID 52399→52957 교체 → recover_state 정상 (BTC 1건만 청산, 깔끔한 상태로 진입) → 텔레그램 `[MODE=TESTNET]` 부팅 메시지 도달 → 첫 screener 사이클 BTC/USDT score=0.724 정상. 발생한 알림 N16(AEUR LOT_SIZE)·N17(fetch_open_orders WARNING)은 모두 알려진 Low 백로그. **N26 spam 결함 영구 봉인**. 페이퍼 카운터 5/9 21:23 기준 0일부터 재시작, B3 판단일 **2026-05-23+** 유지. **N25 (engine idle) 미해결** — 24시간 매매 0건 또는 equity_snapshot 30분 끊김 발견 시 즉시 py-spy 진단 필수. |
+| **마지막 점검** | 2026-05-09 (N26 결함 패치 + commit `92fba8d` 배포 + 관찰 모드 재진입) |
 | **점검 누적** | 5/4 |
-| **남은 블로커** | **N26 패치 배포 대기** (executor.py 변경, `bash deploy/update.sh` 필요). N25(engine idle, equity heartbeat 끊김)는 미해결 — 다음 발동 시 py-spy dump 로 stack trace 확보 필수 |
+| **남은 블로커** | 없음 (N26 패치 배포 완료) — 단 N25(engine idle) 미해결로 다음 발동 시 재발 가능. 재발 시 즉시 `py-spy dump --pid <PID>` 로 stack trace 확보 필수 |
 | **테스트 상태** | 전체 통과 (`python test.py` 기본 실행으로 Phase 3/4 + bugfix + Phase 6/7 전부 커버) |
 | **로드맵 플랜** | `~/.claude/plans/streamed-launching-cascade.md` (2026-04-22 승인 — 역할 분담·타임라인) |
 
@@ -38,36 +38,27 @@ python main.py
 
 ## 현재 작업
 
-> **🟠 N26 패치 배포 대기 (2026-05-09 14:00 KST)** — 5/8 18:48 재시작 후 5시간 만에 N26 결함이 정확히 재발하여 14시간+ 매매 정지. 원인 코드·재현 테스트·패치까지 모두 완료, 도울님 서버 재시작만 남음.
+> **🟢 관찰 모드 재진입 (2026-05-09 21:23 KST 재시작 완료)** — N26 패치 commit `92fba8d` 서버 반영 완료, 페이퍼 누적 카운터 0일부터 재시작.
 >
-> **5/8~5/9 사건 요약 (사건 4)**:
-> - 5/8 18:48 EXECUTOR_START 정상 → 19:21 마지막 equity_snapshot → 19:38~19:44 trades 정상 → 5/9 자정 reset_daily 후 16,611원 누적 (DAILY_MIN_PROFIT 충족 + is_market_healthy=False)
-> - **5/9 00:00:28~00:02:34 KST DAILY_STOP 이벤트 4초 간격 3,562건 spam** (N26 결함 정확히 재현)
-> - 5/9 00:02:37 마지막 SELL pnl=-20,695원 (큰 손실로 daily_pnl 음수 전환되며 spam 멈춤) → 그 후 14시간+ 매매·equity heartbeat 동시 정지
-> - KILL_SWITCH·SUPERVISOR_RESTART 0건 = 봇 프로세스 살아있는 silent hang
+> **5/9 배포 검증 결과 (모두 통과)**:
+> - `git pull` `cc5f406..92fba8d` (N26 commit) ✅
+> - `requirements.txt` 동일 → pip 스킵 ✅
+> - PID 52399→52957 교체, 12:23:03 UTC = 21:23 KST ✅
+> - journal `[init_db] backend=supabase` + 3 컴포넌트 시작 ✅
+> - recover_state 정상 완료 (BTC 0.000200@$80,385.52 1건만 청산 — 5/8 사건의 200+ huge inventory 와 달리 깔끔한 상태) ✅
+> - 텔레그램 `Daily 30K Bot 시작! [MODE=TESTNET]` 부팅 메시지 도달 ✅
+> - 첫 screener 사이클 BTC/USDT score=0.724 ATR=1.51% 거래량=$103M 정상 ✅
+> - 발생한 알림 2건은 모두 알려진 Low 백로그: N16 (AEUR MARKET_LOT_SIZE 청산 실패) / N17 (fetch_open_orders symbol 미지정 ccxt 경고)
 >
-> **N26 결함 원인 (100% 확정)**:
-> - [executor.py:734-745](executor.py#L734-L745) DAILY_STOP 분기 + [executor.py:721-732](executor.py#L721-L732) KILL_SWITCH 분기 모두 동일 패턴
-> - `if engine: await engine.emergency_sell(reason)` 가 ccxt 예외 → outer `except Exception as e:` (line 805) 가 잡음 → 그 다음 줄의 `state.kill_event.set()` / `break` **둘 다 도달 못 함** → `asyncio.sleep(1)` → 다음 iteration → should_stop_profit 여전히 True → 무한 spam (4초 = 1초 sleep + emergency_sell ccxt timeout 약 3초)
+> **다음 세션 Claude 첫 액션 후보 (관찰 모드 우선)**:
+> - 며칠 누적 점검: Supabase `equity_snapshots` 30분 사이클 / `trades` 신규 체결 / `bot_events` EXECUTOR_START·DAILY_STOP·KILL_SWITCH 끊김·spam 없는지 확인 (`/tmp/db_check.py` 이번 세션에서 검증 완료)
+> - **N25 재발 감시** — 24시간 매매 0건 또는 equity_snapshot 30분 끊김 시 **즉시 `py-spy dump --pid <PID>` 로 stack trace 확보** (지난 세션엔 코드 분기 확정 못 함, 이번엔 정확한 await 위치 확정 후 패치)
+> - Day 7 (~2026-05-16) 즈음 R1 진행 + N24 백필 스크립트 같이 작성 (5/4 02:43~19:26 SQLite 119건을 Supabase 로 통합)
+> - Day 14 (~2026-05-23) B3 판단 (MODE=live 전환 여부) — 카운터 5/9 21:23 재시작 기준
 >
-> **패치 (2026-05-09 적용)**:
-> - 두 분기 모두 `state.kill_event.set()` 을 emergency_sell **보다 먼저** 호출 → set 자체는 무조건 보장
-> - emergency_sell 자체를 `try/except` 로 감싸 예외를 swallow + `notify_error("Executor.emergency_sell on KILL_SWITCH/DAILY_STOP", ...)` 로 가시화
-> - break 도달 보장
-> - 회귀 테스트 2건 (`test_n26_daily_stop_no_spam_when_emergency_sell_raises`, `test_n26_kill_switch_no_spam_when_emergency_sell_raises`): 5초 안전망 + spam 결함이면 N건, 패치 후 1건 검증
-> - 전체 단위 테스트 통과
->
-> **다음 액션 (도울님)**:
-> 1. `git add executor.py test.py WORKFLOW.md TODO.md && git commit -m "feat: N26 DAILY_STOP/KILL_SWITCH spam 방지" && git push origin main`
-> 2. SSH 접속 후 `cd ~/Daily_30k_bot && bash deploy/update.sh`
-> 3. `sudo journalctl -u daily30k -f` 로 부팅 확인 (`[init_db] backend=supabase` + EXECUTOR_START + recover_state 진행)
-> 4. 텔레그램 `[MODE=TESTNET]` 부팅 메시지 재수신 확인
->
-> **재발 감시 (다음 세션 Claude)**:
-> - 24시간 매매 0건이면 N25(engine idle) 의심 → 즉시 `py-spy dump --pid <PID>` 로 stack trace 확보
-> - equity_snapshot 30분 끊김도 N25 강력 신호
-> - 진단 도구: `/tmp/db_check.py` (이번 세션에서 검증 완료)
-> - 메모리: `feedback_diagnose_silent_hang` (silent hang + silent fallback 진단 순서, journal=UTC vs Supabase view=KST 혼동 주의)
+> **진단 도구 메모리**:
+> - `feedback_diagnose_silent_hang` (silent hang + silent fallback 진단 순서, journal=UTC vs Supabase view=KST 시간대 혼동 주의)
+> - `feedback_paper_observation` (페이퍼 운영 중 코드 변경 최소화, 안전 패치 hang 방지·로그 가시성·spam 방지는 즉시 처리)
 
 <!--
 작업 중일 때 아래 형식으로 채워넣을 것:
