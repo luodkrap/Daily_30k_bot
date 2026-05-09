@@ -719,6 +719,10 @@ async def run_executor(state: BotState, exchange) -> None:
 
             # ── 2. 일일 손실 한도 초과 → 킬 스위치 ──
             if state.daily_pnl <= -config.DAILY_LOSS_LIMIT:
+                # N26: kill_event.set() 을 emergency_sell 보다 먼저 호출.
+                # emergency_sell ccxt 예외가 except Exception 블록에 잡혀
+                # set/break 둘 다 도달 못 했던 결함 방지 (5/9 00:00 spam 3,562건 사건).
+                state.kill_event.set()
                 await notify_kill_switch()
                 await _log_event(
                     "KILL_SWITCH", "CRITICAL",
@@ -727,12 +731,17 @@ async def run_executor(state: BotState, exchange) -> None:
                      "limit_krw": config.DAILY_LOSS_LIMIT},
                 )
                 if engine:
-                    await engine.emergency_sell("일일 손실 한도 초과")
-                state.kill_event.set()
+                    try:
+                        await engine.emergency_sell("일일 손실 한도 초과")
+                    except Exception as _emsell_err:
+                        await notify_error("Executor.emergency_sell on KILL_SWITCH",
+                                           _emsell_err)
                 break
 
             # ── 3. 일일 목표 수익 달성 → 하드 스탑 ──
             if state.should_stop_profit:
+                # N26: kill_event.set() 을 emergency_sell 보다 먼저 호출 (위와 동일 사유).
+                state.kill_event.set()
                 reason = "목표 수익 달성" if state.daily_pnl >= 0 else "조기 중단 (시장 악화)"
                 await notify_daily_stop(reason, state.daily_pnl)
                 await _log_event(
@@ -740,8 +749,11 @@ async def run_executor(state: BotState, exchange) -> None:
                     {"daily_pnl_krw": state.daily_pnl},
                 )
                 if engine:
-                    await engine.emergency_sell(reason)
-                state.kill_event.set()
+                    try:
+                        await engine.emergency_sell(reason)
+                    except Exception as _emsell_err:
+                        await notify_error("Executor.emergency_sell on DAILY_STOP",
+                                           _emsell_err)
                 break
 
             # ── 4. 200MA 체크 + 환율 갱신 + equity snapshot (30분마다) ──

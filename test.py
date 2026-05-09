@@ -1922,6 +1922,217 @@ def test_n22_init_db_result_visible_in_journal():
     print("  [PASS] n22_init_db_result_visible_in_journal: backend 선택 결과 journal 가시화")
 
 
+# ─────────────────────────────────────────────────────────────────────
+# N26: DAILY_STOP / KILL_SWITCH 분기 break 보장 (2026-05-09 사건 처방)
+# ─────────────────────────────────────────────────────────────────────
+
+class _N26FailingEngineBase:
+    """공통 — setup_grid 에서 daily_pnl 강제 변경, emergency_sell 가 raise.
+
+    iter 1 line 779 setup_grid 호출 시 daily_pnl 변경 → iter 2 line 721/735
+    분기 진입 시 engine 살아있는 상태로 emergency_sell 호출 → raise.
+    결함 코드: except 블록이 잡아 kill_event.set()/break 도달 못 함 → spam.
+    패치 코드: kill_event.set() 가 emergency_sell 전에 호출 + try/except 로 break 보장."""
+
+    _trigger_pnl: float = 0.0  # 서브클래스에서 설정
+
+    def __init__(self, symbol, exchange, state):
+        self.symbol = symbol
+        self.exchange = exchange
+        self.state = state
+        self.is_active = False
+        self.buy_orders: list = []
+        self.sell_orders: list = []
+        self.total_qty = 0.0
+        self.avg_price = 0.0
+        self.total_invested = 0.0
+
+    def validate_fees(self):
+        return True
+
+    async def setup_grid(self):
+        self.is_active = True
+        if self.state.daily_pnl == 0:
+            self.state.daily_pnl = self._trigger_pnl
+
+    async def emergency_sell(self, reason):
+        raise RuntimeError(f"simulated ccxt failure: {reason}")
+
+    async def _get_current_price(self):
+        return 100.0
+
+    async def check_stop_loss(self, p):
+        return False
+
+    async def monitor_orders(self):
+        pass
+
+    async def regrid(self):
+        pass
+
+
+def _n26_install_mocks(engine_cls):
+    """run_executor 외부 의존 우회 + GridEngine 교체. (orig_state, restore) 반환."""
+    import shared_state  # noqa: F401
+    import executor as executor_mod
+    import notifier
+    import persistence
+
+    captured_events: list[tuple] = []
+
+    orig_record_event = persistence.record_event
+
+    async def fake_record_event(mode, event_type, severity, message, payload=None):
+        captured_events.append((event_type, severity, message))
+
+    persistence.record_event = fake_record_event
+
+    orig_send = notifier.send
+    orig_notify_kill = notifier.notify_kill_switch
+    orig_notify_daily = notifier.notify_daily_stop
+    orig_notify_err = notifier.notify_error
+    orig_notify_trade = notifier.notify_trade
+
+    async def _noop(*a, **kw):
+        pass
+
+    notifier.send = _noop
+    notifier.notify_kill_switch = _noop
+    notifier.notify_daily_stop = _noop
+    notifier.notify_error = _noop
+    notifier.notify_trade = _noop
+
+    orig_grid_engine = executor_mod.GridEngine
+    executor_mod.GridEngine = engine_cls
+
+    orig_umf = executor_mod.update_market_filter
+    orig_ukr = executor_mod.update_krw_rate
+    orig_se = executor_mod.snapshot_equity
+    orig_recover = executor_mod.recover_state
+    executor_mod.update_market_filter = _noop
+    executor_mod.update_krw_rate = _noop
+    executor_mod.snapshot_equity = _noop
+    executor_mod.recover_state = _noop
+
+    def restore():
+        persistence.record_event = orig_record_event
+        notifier.send = orig_send
+        notifier.notify_kill_switch = orig_notify_kill
+        notifier.notify_daily_stop = orig_notify_daily
+        notifier.notify_error = orig_notify_err
+        notifier.notify_trade = orig_notify_trade
+        executor_mod.GridEngine = orig_grid_engine
+        executor_mod.update_market_filter = orig_umf
+        executor_mod.update_krw_rate = orig_ukr
+        executor_mod.snapshot_equity = orig_se
+        executor_mod.recover_state = orig_recover
+
+    return captured_events, restore
+
+
+def test_n26_daily_stop_no_spam_when_emergency_sell_raises():
+    """N26: 5/9 00:00 사건 재현·방지.
+
+    DAILY_STOP 분기에서 engine.emergency_sell 가 ccxt 예외를 던지면
+    `kill_event.set()` 과 `break` 가 도달 못 해 메인 루프가 spam 했던 결함.
+    실제 사건: 5/9 00:00:28~00:02:34 KST DAILY_STOP 이벤트 3,562건 누적.
+
+    패치: kill_event.set() 을 emergency_sell 보다 먼저 호출 + try/except 로
+    감싸 break 도달 보장. DAILY_STOP 정확히 1건, kill_event=True."""
+    asyncio.run(_test_n26_daily_stop_async())
+
+
+async def _test_n26_daily_stop_async():
+    import config
+    import executor as executor_mod
+    from shared_state import BotState
+
+    class _DailyStopEngine(_N26FailingEngineBase):
+        _trigger_pnl = config.DAILY_TARGET + 100  # should_stop_profit=True
+
+    captured_events, restore = _n26_install_mocks(_DailyStopEngine)
+
+    state = BotState()
+    state.target_coin = "BTC/USDT"
+
+    class _Ex:
+        pass
+
+    ex = _Ex()
+
+    async def force_stop():
+        await asyncio.sleep(5.0)
+        state.kill_event.set()
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(
+                executor_mod.run_executor(state, ex),
+                force_stop(),
+            ),
+            timeout=10.0,
+        )
+    finally:
+        restore()
+
+    daily_stop_count = sum(1 for e in captured_events if e[0] == "DAILY_STOP")
+    assert daily_stop_count == 1, (
+        f"DAILY_STOP 정확히 1건이어야 함 (실제 {daily_stop_count}건). "
+        f"5/9 00:00 spam 사건(3,562건) 재발."
+    )
+    assert state.kill_event.is_set(), "kill_event 가 set 되어야 함"
+    print(f"  [PASS] n26_daily_stop_no_spam: DAILY_STOP {daily_stop_count}건, kill_event=True")
+
+
+def test_n26_kill_switch_no_spam_when_emergency_sell_raises():
+    """N26: KILL_SWITCH 분기도 DAILY_STOP 와 동일 결함 (대칭 검증).
+
+    daily_pnl <= -DAILY_LOSS_LIMIT 분기에서도 emergency_sell 예외 → spam 가능했던 결함.
+    패치: KILL_SWITCH 분기도 kill_event.set() 선호출 + try/except 적용."""
+    asyncio.run(_test_n26_kill_switch_async())
+
+
+async def _test_n26_kill_switch_async():
+    import config
+    import executor as executor_mod
+    from shared_state import BotState
+
+    class _KillSwitchEngine(_N26FailingEngineBase):
+        _trigger_pnl = -config.DAILY_LOSS_LIMIT - 100
+
+    captured_events, restore = _n26_install_mocks(_KillSwitchEngine)
+
+    state = BotState()
+    state.target_coin = "BTC/USDT"
+
+    class _Ex:
+        pass
+
+    ex = _Ex()
+
+    async def force_stop():
+        await asyncio.sleep(5.0)
+        state.kill_event.set()
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(
+                executor_mod.run_executor(state, ex),
+                force_stop(),
+            ),
+            timeout=10.0,
+        )
+    finally:
+        restore()
+
+    kill_count = sum(1 for e in captured_events if e[0] == "KILL_SWITCH")
+    assert kill_count == 1, (
+        f"KILL_SWITCH 정확히 1건이어야 함 (실제 {kill_count}건). spam 결함 재발."
+    )
+    assert state.kill_event.is_set(), "kill_event 가 set 되어야 함"
+    print(f"  [PASS] n26_kill_switch_no_spam: KILL_SWITCH {kill_count}건, kill_event=True")
+
+
 def test_n2_notifier_failure_also_swallowed():
     """N2: notifier 자체 장애(텔레그램 다운 등)에도 persistence 공개 함수는 예외 미전파."""
     import persistence
@@ -2085,6 +2296,11 @@ if __name__ == "__main__":
         print("\n=== Phase 7: N22 init_db 결과 journal 가시화 ===")
         test_n22_init_db_result_visible_in_journal()
         print("Phase 7 N22 가시성 패치 단위 테스트 통과!")
+
+        print("\n=== Phase 7: N26 DAILY_STOP / KILL_SWITCH spam 방지 ===")
+        test_n26_daily_stop_no_spam_when_emergency_sell_raises()
+        test_n26_kill_switch_no_spam_when_emergency_sell_raises()
+        print("Phase 7 N26 spam 방지 단위 테스트 통과!")
 
     if mode == "unit":
         # 기본 실행: 모든 오프라인 단위 테스트 (Phase 3/4 + bugfix + Phase 6/7).

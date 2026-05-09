@@ -9,10 +9,10 @@
 
 | 항목 | 값 |
 |------|----|
-| **현재 Phase** | **Phase 7 운영 — 관찰 모드 재가동 (2026-05-08 18:48 KST 재시작 완료)**. **사건 3: 5/5 16:48 KST 마지막 SELL pnl=-30,640 KRW 이후 73시간 매매 0건** — 봇 프로세스·screener·equity_snapshot 정상이지만 매매만 정지. KILL_SWITCH·DAILY_STOP 흔적 0건이라 break 안 함. 가설: engine 객체 idle 상태 갇힘(N25) 또는 N18 시장 악화 자동 전환 후 회복 차단. + **5/5 03:35~08:59 KST DAILY_STOP 이벤트 4,679건 4초 간격 spam(N26)** — break 안 먹힌 중복 결함. 5/8 18:48 재시작 후 recover_state 가 testnet huge inventory 200+ 자산 청산하며 매매 사이클 정상 재진입. **페이퍼 누적 카운터 0일부터 재시작**, B3 판단일 5/18 → **~5/22+ 연기 검토 필요**. |
-| **마지막 점검** | 2026-05-08 (73시간 매매 정지 진단 + 봇 재시작 복구 + N25/N26 백로그 등록) |
-| **점검 누적** | 5/3 |
-| **남은 블로커** | 없음 (재시작으로 매매 재개) — 단 N25(engine idle) 결함은 미해결로 다음 발동 시 재발 가능. 이번 세션 누적 카운터 0일부터 재시작 |
+| **현재 Phase** | **Phase 7 운영 — N26 결함 패치 완료, 배포 대기 (2026-05-09 14:00 KST)**. **사건 4: 5/8 18:48 재시작 5시간 만에 N26 spam 결함 재발** (5/9 00:00:28~00:02:34 KST DAILY_STOP 이벤트 4초 간격 3,562건 누적, 그 후 약 14시간 매매·equity heartbeat 정지). 원인 100% 확정: [executor.py:734-745](executor.py#L734-L745) DAILY_STOP 분기 + [executor.py:721-732](executor.py#L721-L732) KILL_SWITCH 분기에서 `engine.emergency_sell` ccxt 예외가 outer `except Exception` 에 잡혀 `state.kill_event.set()` / `break` 도달 못 함. **패치 적용**: 두 분기 모두 `kill_event.set()` 을 emergency_sell 보다 **먼저** 호출 + emergency_sell 자체를 try/except 로 감싸 break 도달 보장. 회귀 테스트 2건 (`test_n26_daily_stop_no_spam`, `test_n26_kill_switch_no_spam`) 추가, 전체 단위 테스트 통과. **배포 대기 중** — 도울님이 서버 재시작 + `bash deploy/update.sh` 실행 시 활성화. **B3 판단일 5/22+ 연기 유지**. |
+| **마지막 점검** | 2026-05-09 (N26 결함 재발 진단 + executor 패치 + 회귀 테스트 2건 + 배포 가이드 출력) |
+| **점검 누적** | 5/4 |
+| **남은 블로커** | **N26 패치 배포 대기** (executor.py 변경, `bash deploy/update.sh` 필요). N25(engine idle, equity heartbeat 끊김)는 미해결 — 다음 발동 시 py-spy dump 로 stack trace 확보 필수 |
 | **테스트 상태** | 전체 통과 (`python test.py` 기본 실행으로 Phase 3/4 + bugfix + Phase 6/7 전부 커버) |
 | **로드맵 플랜** | `~/.claude/plans/streamed-launching-cascade.md` (2026-04-22 승인 — 역할 분담·타임라인) |
 
@@ -38,22 +38,36 @@ python main.py
 
 ## 현재 작업
 
-> **🟢 관찰 모드 재가동 (2026-05-08 18:48 KST 재시작 완료)** — 73시간 매매 정지 진단·복구. PID 37768→51204 교체, recover_state 가 testnet 200+ 자산 huge inventory 청산하며 매매 사이클 정상 재진입. `[init_db] backend=supabase` journal 출력 정상, EXECUTOR_START 이벤트 즉시 기록 확인.
+> **🟠 N26 패치 배포 대기 (2026-05-09 14:00 KST)** — 5/8 18:48 재시작 후 5시간 만에 N26 결함이 정확히 재발하여 14시간+ 매매 정지. 원인 코드·재현 테스트·패치까지 모두 완료, 도울님 서버 재시작만 남음.
 >
-> **5/5~5/8 사건 요약**:
-> - 5/5 16:48 KST 마지막 SELL pnl=-30,640 KRW 이후 73시간 trades 0건 (DB·screener·equity 정상)
-> - 봇 프로세스 PID 37768 4일째 살아있음, NRestarts=0, screener "타겟 선정" 매 15분 정상
-> - **KILL_SWITCH·DAILY_STOP 흔적 0건** — break 안 함 확정 = 메인 루프 살아있는데 매매만 정지
-> - 가설 1 (N25): engine 객체 idle 상태 — buy/sell 주문 다 비었지만 setup_grid 재호출 분기 못 탐
-> - 가설 2 (N18): is_market_healthy=False 자동 전환 후 200MA 회복 안 됨 (기존 백로그)
-> - 5/5 03:35~08:59 KST DAILY_STOP 4,679건 4초 spam (UTC 자정에 자동 종료, N26)
+> **5/8~5/9 사건 요약 (사건 4)**:
+> - 5/8 18:48 EXECUTOR_START 정상 → 19:21 마지막 equity_snapshot → 19:38~19:44 trades 정상 → 5/9 자정 reset_daily 후 16,611원 누적 (DAILY_MIN_PROFIT 충족 + is_market_healthy=False)
+> - **5/9 00:00:28~00:02:34 KST DAILY_STOP 이벤트 4초 간격 3,562건 spam** (N26 결함 정확히 재현)
+> - 5/9 00:02:37 마지막 SELL pnl=-20,695원 (큰 손실로 daily_pnl 음수 전환되며 spam 멈춤) → 그 후 14시간+ 매매·equity heartbeat 동시 정지
+> - KILL_SWITCH·SUPERVISOR_RESTART 0건 = 봇 프로세스 살아있는 silent hang
 >
-> 새 세션 첫 액션 후보:
-> - 며칠 누적 점검: Supabase `equity_snapshots` 30분 사이클 / `trades` 신규 체결 / `bot_events` EXECUTOR_START 끊김 없는지 확인 (`/tmp/db_check.py`)
-> - **N25 결함 재발 감시** — 같은 증상(매매 정지인데 KILL_SWITCH 0건) 재발 시 즉시 py-spy 진단으로 stack trace 확보 (이번엔 코드 분기 확정 못 함)
-> - Day 7 (~2026-05-15) 즈음 R1 진행 + N24 백필 스크립트 같이 작성 (5/4 02:43~19:26 SQLite 119건을 Supabase 로 통합)
-> - Day 14 (~2026-05-22) B3 판단 (MODE=live 전환 여부) — 카운터 5/8 재시작 기준
-> - **진단 도구 메모리**: `feedback_diagnose_silent_hang` (silent hang + silent fallback 진단법, journal=UTC vs Supabase view=KST 시간대 혼동 주의)
+> **N26 결함 원인 (100% 확정)**:
+> - [executor.py:734-745](executor.py#L734-L745) DAILY_STOP 분기 + [executor.py:721-732](executor.py#L721-L732) KILL_SWITCH 분기 모두 동일 패턴
+> - `if engine: await engine.emergency_sell(reason)` 가 ccxt 예외 → outer `except Exception as e:` (line 805) 가 잡음 → 그 다음 줄의 `state.kill_event.set()` / `break` **둘 다 도달 못 함** → `asyncio.sleep(1)` → 다음 iteration → should_stop_profit 여전히 True → 무한 spam (4초 = 1초 sleep + emergency_sell ccxt timeout 약 3초)
+>
+> **패치 (2026-05-09 적용)**:
+> - 두 분기 모두 `state.kill_event.set()` 을 emergency_sell **보다 먼저** 호출 → set 자체는 무조건 보장
+> - emergency_sell 자체를 `try/except` 로 감싸 예외를 swallow + `notify_error("Executor.emergency_sell on KILL_SWITCH/DAILY_STOP", ...)` 로 가시화
+> - break 도달 보장
+> - 회귀 테스트 2건 (`test_n26_daily_stop_no_spam_when_emergency_sell_raises`, `test_n26_kill_switch_no_spam_when_emergency_sell_raises`): 5초 안전망 + spam 결함이면 N건, 패치 후 1건 검증
+> - 전체 단위 테스트 통과
+>
+> **다음 액션 (도울님)**:
+> 1. `git add executor.py test.py WORKFLOW.md TODO.md && git commit -m "feat: N26 DAILY_STOP/KILL_SWITCH spam 방지" && git push origin main`
+> 2. SSH 접속 후 `cd ~/Daily_30k_bot && bash deploy/update.sh`
+> 3. `sudo journalctl -u daily30k -f` 로 부팅 확인 (`[init_db] backend=supabase` + EXECUTOR_START + recover_state 진행)
+> 4. 텔레그램 `[MODE=TESTNET]` 부팅 메시지 재수신 확인
+>
+> **재발 감시 (다음 세션 Claude)**:
+> - 24시간 매매 0건이면 N25(engine idle) 의심 → 즉시 `py-spy dump --pid <PID>` 로 stack trace 확보
+> - equity_snapshot 30분 끊김도 N25 강력 신호
+> - 진단 도구: `/tmp/db_check.py` (이번 세션에서 검증 완료)
+> - 메모리: `feedback_diagnose_silent_hang` (silent hang + silent fallback 진단 순서, journal=UTC vs Supabase view=KST 혼동 주의)
 
 <!--
 작업 중일 때 아래 형식으로 채워넣을 것:
@@ -76,6 +90,7 @@ python main.py
 
 | 날짜 | 파일 | 변경 이유 |
 |------|------|-----------|
+| 2026-05-09 | [executor.py](executor.py), [test.py](test.py) | **N26 spam 결함 패치** — 5/8 18:48 재시작 5시간 만에 결함 재발 (5/9 00:00:28~00:02:34 KST DAILY_STOP 4초 간격 3,562건 spam, 그 후 14시간+ 매매 정지). 도울님 "수파베이스 한 번 더 확인" 요청 → `/tmp/db_check.py` 실행 → 마지막 trade 5/9 00:02:37, equity_snapshot 5/8 19:21 끊김, EXECUTOR_START 1건+SUPERVISOR_RESTART 0건+KILL_SWITCH 0건+DAILY_STOP 3,562건 확정 → executor.py:734-745 (DAILY_STOP) + 721-732 (KILL_SWITCH) 분기에서 `engine.emergency_sell` ccxt 예외가 outer `except Exception as e:` 에 잡혀 `state.kill_event.set()` / `break` 둘 다 도달 못 한 결함 100% 확정. 패치: 두 분기 모두 `state.kill_event.set()` 을 emergency_sell **앞**으로 옮기고 emergency_sell 자체를 `try/except` 로 감싸 예외 swallow + `notify_error("Executor.emergency_sell on KILL_SWITCH/DAILY_STOP", ...)` 로 가시화 → break 도달 보장. 회귀 테스트 2건 (`_N26FailingEngineBase` 공통 모의 엔진 + `_n26_install_mocks` 공통 셋업 헬퍼 + `test_n26_daily_stop_no_spam_when_emergency_sell_raises` / `test_n26_kill_switch_no_spam_when_emergency_sell_raises`): setup_grid 호출 시 daily_pnl 강제 변경 → iter 2 진입 시 engine 살아있는 상태로 emergency_sell raise → 5초 안전망 + spam 결함이면 N건/패치 후 1건 검증. 전체 단위 테스트 통과. **배포 대기**: `bash deploy/update.sh` 후 활성화 |
 | 2026-05-08 | [WORKFLOW.md](WORKFLOW.md) | **73시간 매매 정지 진단 + 봇 재시작 + N25/N26 백로그 등록**. 도울님 "수파베이스 한 번 더 확인" 요청 → `/tmp/db_check.py` 로 trades 누적 231건 5/5 16:48 KST 정지 확인 → SSH journal 진단으로 봇 프로세스(PID 37768)·screener·equity_snapshot 모두 정상이지만 매매만 정지 확정. KILL_SWITCH·DAILY_STOP 흔적 0건이라 메인 루프 break 안 함. `sudo systemctl restart daily30k` (PID 37768→51204) → `[init_db] backend=supabase` 첫 줄 + EXECUTOR_START 이벤트 + recover_state 가 testnet 200+ 자산 huge inventory 청산. **N25 (engine idle 결함, 재발 감시 필요), N26 (DAILY_STOP 4초 spam 결함)** 백로그 등록. 페이퍼 누적 카운터 0일부터 재시작, B3 판단일 5/22+ 검토 필요. 코드 변경 없음 |
 | 2026-05-04 | [main.py](main.py), [test.py](test.py) | **N22 가시성 패치** — 5/4 02:43 KST 부팅 시 Supabase 일시 끊김 → SQLite fallback 발동했으나 [DEGRADED] 텔레그램 알림이 일시 NetworkError 로 누락 → 16시간 후 도울님 "DB에 데이터 잘 쌓이고 있어?" 질문으로 발견. 데이터 손실 0건이지만 **fallback 발생 자체가 16시간 무인지** 가 진짜 위험. 처방: `init_db()` 결과를 무조건 stdout 으로 print (`[init_db] backend=...`), fallback 시 stderr 로 사유 (`[init_db] FALLBACK reason=...`). 텔레그램 send 는 외부 의존 (네트워크/dedup) 이라 신뢰성 한계, journal 은 systemd 가 보장 (N12 패치로 이미 timestamp + auto-rotate 확보). main.py 에 `import sys` 추가 + 2줄 print 삽입. 회귀 테스트 1건 (`test_n22_init_db_result_visible_in_journal`: 정적 검사로 print 패턴 검증). 전체 테스트 통과 |
 | 2026-05-04 | [deploy/daily30k.service](deploy/daily30k.service), [deploy/setup.sh](deploy/setup.sh), [deploy/update.sh](deploy/update.sh), [deploy/advise.sh](deploy/advise.sh), [shared_state.py](shared_state.py), [main.py](main.py), [executor.py](executor.py), [test.py](test.py) | **N12+N19+N20 안전 패치 풀 패키지** — 4/28~5/4 6일 `run_executor` 단독 hang 사건(예외 없음 → `_supervise` 못 잡음 → SUPERVISOR_RESTART 0건) 재발 방지. **N12**: systemd unit `StandardOutput/Error=journal` + `SyslogIdentifier=daily30k` 전환 (timestamp 자동 부여 + auto-rotate + `journalctl --since` 시간쿼리). 사후 디버깅 가능성 확보가 가장 큰 동기. setup.sh/update.sh/advise.sh 로그 명령 `tail -f logs/*.log` → `journalctl -u daily30k -f` 갱신. **N19**: `BotState.executor_heartbeat` 추가 + `_supervise(watchdog_timeout, heartbeat_attr)` 매개변수 추가 — executor 만 600초 무갱신 시 task 강제 cancel → TimeoutError 변환 → 기존 재시작 경로 재사용 + SUPERVISOR_RESTART 페이로드 `is_watchdog: true`. heartbeat 갱신 위치 2곳: executor 메인 루프 매 iteration 첫 줄, recover_state 매 자산 처리 시작점(testnet 다중 청산 throttle 시간 보호). **N20**: `_retry_api(timeout=60.0)` 매개변수 추가 — 각 시도를 `asyncio.wait_for` 로 감싸 ccxt 외부 await(fetch_balance/fetch_ticker/fetch_ohlcv/fetch_open_orders/cancel_order/create_order)이 영원히 hang 되지 않도록. 타임아웃은 일반 예외와 동일하게 다음 시도로 넘어감. 회귀 테스트 5건 (`test_n12_service_uses_journald`, `test_n19_supervise_cancels_hung_executor`, `test_n19_supervise_normal_executor_no_false_trigger`, `test_n20_retry_api_times_out_on_hung_call`, `test_n20_retry_api_normal_call_unaffected`). 전체 테스트 통과 |
@@ -109,19 +124,19 @@ python main.py
 
 ## 다음 작업 목록 (우선순위 순)
 
-> **2026-05-08 합의 변경** — 5/5 16:48 KST 마지막 SELL 이후 73시간 매매 정지 사건 발견 (engine idle 결함, KILL_SWITCH 흔적 0건). 봇 재시작으로 즉시 복구, N25/N26 백로그 등록. **페이퍼 누적 카운터 0일부터 재시작**, B3 일정 5/18 → 5/22+ 연기 검토 필요.
+> **2026-05-09 합의 변경** — 5/8 재시작 5시간 만에 N26 spam 결함 재발 (3,562건 누적 + 14시간+ 매매 정지). N26 패치 완료, 도울님 배포만 남음. **페이퍼 누적 카운터 또 0일부터**, B3 일정 5/22+ 연기 유지. N25(engine idle) 미해결 — 이번에도 재발했을 가능성 높음 (equity heartbeat 끊김 신호) → 다음 발동 시 py-spy 진단 필수.
 
 ---
 
-### 🎯 현 우선순위 (관찰 재개 → N25 재발 감시 → R1 → B3)
+### 🎯 현 우선순위 (N26 배포 → N25 재발 감시 → R1 → B3)
 
 | 시점 | 액션 | 비고 |
 |------|------|------|
-| **2026-05-08 (지금)** | ✅ **봇 재시작 완료** | PID 37768→51204, recover_state 200+ 자산 청산, 매매 사이클 정상 진입 |
-| **2026-05-08~05/15 (Day 0~7)** | 👤 **손 떼고 페이퍼 누적** | 매일 `/status` 또는 Supabase `trades_kst` 로 누적량만 확인. **N25 재발 감시: 24시간 매매 0건이면 즉시 `py-spy dump --pid <PID>`** |
-| **05/15~05/18 (Day 7~10)** | 🤖 **R1 진행 권장** | `/status` 응답에 누적 손익 추가. `persistence.get_total_pnl(mode)` 헬퍼 + 회귀 테스트 1건 |
-| **05/18~05/21 (선택)** | 🤖 R3 (분석 대시보드) | 승률·MDD·샤프비. R1 만으로도 B3 가능하나 있으면 강력 |
-| **2026-05-22 (Day 14)** | 👤 **B3 판단** | 누적 손익 검토 → MODE=live 전환 여부 결정 → 실거래 HMAC 키 발급(IP 화이트리스트, 출금권한 OFF) → `.env` `MODE=live` 전환. N25 재발 안 했어야 가능 |
+| **2026-05-09 (지금)** | 👤 **N26 패치 배포** | `git push` + `bash deploy/update.sh` + 텔레그램 `[MODE=TESTNET]` 부팅 메시지 재수신 확인. 페이퍼 카운터 0일부터 재시작 |
+| **2026-05-09~05/16 (Day 0~7)** | 👤 **손 떼고 페이퍼 누적** | 매일 `/status` 또는 Supabase `trades_kst` 로 누적량만 확인. **N25 재발 감시: 24시간 매매 0건 또는 equity_snapshot 30분 끊김 시 즉시 `py-spy dump --pid <PID>`** |
+| **05/16~05/19 (Day 7~10)** | 🤖 **R1 진행 권장** | `/status` 응답에 누적 손익 추가. `persistence.get_total_pnl(mode)` 헬퍼 + 회귀 테스트 1건 |
+| **05/19~05/22 (선택)** | 🤖 R3 (분석 대시보드) | 승률·MDD·샤프비. R1 만으로도 B3 가능하나 있으면 강력 |
+| **2026-05-23 (Day 14)** | 👤 **B3 판단** | 누적 손익 검토 → MODE=live 전환 여부 결정 → 실거래 HMAC 키 발급(IP 화이트리스트, 출금권한 OFF) → `.env` `MODE=live` 전환. N25/N26 재발 안 했어야 가능 |
 
 > 💡 **보류 항목 (페이퍼 데이터 정확성에 영향 없음 — 새 세션에서도 그대로 보류 권장)**
 > - **N15** (Med): BUY 행 pnl 음수 기록 → 분석 시 `WHERE side='SELL'` 만 합산하면 영향 0
@@ -167,9 +182,9 @@ python main.py
 - [ ] N23 (Med): `init_db()` fallback 발생 시 30분마다 Supabase 재연결 시도 (싱글톤 자동 복구). 5/4 사건처럼 16시간 SQLite 갇혀있는 상황 자동 회복용. R1 진행 시점에 같이 작성
 - [ ] N24 (Med): SQLite → Supabase 백필 스크립트 (`reports/backfill_sqlite.py`) — 5/4 02:43~19:26 SQLite 119건을 Supabase 로 옮겨 통합 분석. R1 분석 직전에 1회 사용
 
-**🔴 신규 결함 (5/8 사건 — 진단 미완)**
-- [ ] **N25 (High)**: **engine idle 결함** — 5/5 16:48 KST 마지막 SELL 후 73시간 매매 정지 사건. KILL_SWITCH/DAILY_STOP 흔적 0건이라 메인 루프 break 안 함 확정, screener·equity_snapshot 정상, 그런데 매매만 정지. 코드 [executor.py:704-783](executor.py#L704-L783) 분기 중 어디에 갇혔는지 미확정 (engine 객체 buy/sell 주문 모두 비었지만 setup_grid 재호출 분기 못 탔을 가능성, 또는 N18 시장 악화 자동 전환 후 회복 차단 가능성). 재발 시 즉시 `py-spy dump --pid <PID>` 로 stack trace 확보 후 재현 테스트 작성 → 패치. 처방 후보: (a) engine.is_active=False & buy_orders=[] & sell_orders=[] 조건 시 engine=None reset 강제, (b) heartbeat 와 별도로 "마지막 거래 시각" watchdog (예: 4시간 무거래 시 강제 regrid)
-- [ ] **N26 (Med)**: **DAILY_STOP 4초 spam 결함** — 5/5 03:35~08:59 KST 5.5시간 동안 같은 메시지 4,679건 기록 (4초 간격). 코드 [executor.py:734-745](executor.py#L734-L745) `should_stop_profit` 분기는 `_log_event` + `kill_event.set()` + `break` 인데 break 가 안 먹히고 있다는 강력한 증거. 재현 케이스: state.daily_pnl 양수 + should_stop_profit=True 인 상태로 메인 루프 진입 시 DAILY_STOP 이벤트가 1회만 기록되는지 확인. UTC 자정에 자동 종료된 점으로 봐 reset_daily 가 should_stop_profit 플래그를 클리어하는 것은 맞음. 처방 후보: `_log_event` 가 await 인데 그 뒤 `state.kill_event.set()` 가 set 됐어도 outer `while not state.kill_event.is_set()` 루프 직전 `if state.kill_event.is_set(): break` 리체크 분기(line 710) 가 작동하는지 검증
+**🔴 신규 결함 (5/8~5/9 사건)**
+- [ ] **N25 (High, 미해결)**: **engine idle 결함** — 5/5 16:48 KST 마지막 SELL 후 73시간 매매 정지 사건 + 5/9 00:02:37 마지막 SELL 후 14시간+ 매매·equity heartbeat 동시 정지 (재발 의심). KILL_SWITCH/DAILY_STOP 트리거 (5/9 사건) 또는 흔적 0건 (5/5 사건) 모두 메인 루프 break 안 함 확정. equity_snapshot 30분 끊김 신호가 결정타 — executor 메인 루프 line 749 30분 타이머 분기 진입 못 함. 코드 [executor.py:704-820](executor.py#L704-L820) 분기 중 어디에 갇혔는지 미확정. 재발 시 즉시 `py-spy dump --pid <PID>` 로 stack trace 확보 후 재현 테스트 작성 → 패치. 처방 후보: (a) engine.is_active=False & buy_orders=[] & sell_orders=[] 조건 시 engine=None reset 강제, (b) heartbeat 와 별도로 "마지막 거래 시각" watchdog (예: 4시간 무거래 시 강제 regrid)
+- [x] ~~**N26** (2026-05-09 완료): **DAILY_STOP / KILL_SWITCH spam 결함 패치** — 5/5 03:35~08:59 KST 4,679건 + 5/9 00:00:28~00:02:34 KST 3,562건 두 차례 발생. 원인: [executor.py:734-745](executor.py#L734-L745) DAILY_STOP + [executor.py:721-732](executor.py#L721-L732) KILL_SWITCH 분기에서 `engine.emergency_sell` 가 ccxt 예외 → outer `except Exception as e:` (line 805) 가 잡음 → `state.kill_event.set()` / `break` 둘 다 도달 못 함. 패치: 두 분기 모두 `kill_event.set()` 을 emergency_sell 앞으로 이동 + emergency_sell 자체를 try/except 로 감싸 swallow + `notify_error` 로 가시화. 회귀 테스트 2건 (`test_n26_daily_stop_no_spam_when_emergency_sell_raises`, `test_n26_kill_switch_no_spam_when_emergency_sell_raises`). 전체 단위 테스트 통과~~
 
 ---
 
@@ -226,6 +241,7 @@ A 와 독립. 로컬 개발 환경에서 진행. **C1 전 반드시 N3+N4 → N1
 
 | 날짜 | ID | 내용 |
 |------|----|------|
+| 2026-05-09 | N26 | **DAILY_STOP / KILL_SWITCH spam 결함 패치** — 5/5 4,679건 + 5/9 3,562건 두 차례 발생한 4초 간격 spam 결함 처방. 원인 100% 확정: [executor.py:734-745](executor.py#L734-L745) DAILY_STOP 분기 + [executor.py:721-732](executor.py#L721-L732) KILL_SWITCH 분기가 모두 `if engine: await engine.emergency_sell(reason)` 호출 후 `state.kill_event.set()` + `break` 순서. emergency_sell ccxt 예외(401/timeout 등)가 outer `except Exception as e:` (line 805) 에 잡히면 `kill_event.set()` 와 `break` 둘 다 절대 도달 못 함 → `asyncio.sleep(1)` → 다음 iteration → should_stop_profit / 손실한도 여전히 트리거 → 무한 spam (4초 = 1초 sleep + emergency_sell ccxt timeout 약 3초). 결함 코드는 set/break 가 emergency_sell **이후** 줄에 있어 emergency_sell 가 무사 통과해야만 작동. 5/9 사건의 경우 5/8 19:21 이후 equity_snapshot 끊겨 엔진/시장상태 stale 인 채로 자정 reset_daily → 매매 → daily_pnl 16,611원 (DAILY_MIN_PROFIT 충족) + is_market_healthy=False → should_stop_profit=True → emergency_sell 실패 → spam. 패치: 두 분기 모두 (1) `state.kill_event.set()` 을 emergency_sell **보다 먼저** 호출하여 set 자체는 무조건 보장, (2) emergency_sell 호출을 `try/except Exception as _emsell_err: await notify_error("Executor.emergency_sell on KILL_SWITCH/DAILY_STOP", _emsell_err)` 로 감싸 예외 swallow + 가시화, (3) break 가 try/except 밖에서 무조건 실행되도록 ordering. 회귀 테스트 2건 (`_N26FailingEngineBase` 공통 모의 엔진 + `_n26_install_mocks` 공통 셋업 헬퍼 도입): `test_n26_daily_stop_no_spam_when_emergency_sell_raises` 는 setup_grid 시 `daily_pnl=DAILY_TARGET+100` 강제 설정 → iter 2 line 735 트리거, `test_n26_kill_switch_no_spam_when_emergency_sell_raises` 는 `-DAILY_LOSS_LIMIT-100` 강제 설정 → iter 2 line 721 트리거. 5초 force_stop 안전망 + 결함이면 spam N건/패치 후 1건 검증. 전체 단위 테스트 통과 |
 | 2026-05-04 | N22 | **init_db 결과 journal 가시화** — 5/4 02:43 KST Supabase 일시 끊김 → SQLite fallback 발동했으나 [DEGRADED] 텔레그램 알림이 일시 NetworkError 로 누락 → 16시간 후에야 도울님 "DB에 데이터 잘 쌓이고 있어?" 질문으로 발견된 사건 처방. 데이터 손실 0건 (5/4 02:43~19:26 분 119건은 서버 SQLite 에 안전, 19:26 사용자 재시작 후 Supabase 정상 적재). 진단 시 결정타였던 정보: (1) `lsof -p $PID | grep trades.db` 의 fd 15u → SqliteBackend 사용 확정, (2) `lsof | grep "->.*:6543"` 의 ESTABLISHED → Supabase Pooler 정상 연결 확정, (3) `journalctl --since` UTC 표기 vs Supabase view KST 표기 시간대 혼동이 조기 hang 오진의 원인이었음. 처방: [main.py](main.py) `import sys` + `init_db()` 결과 후 `print(f"[init_db] backend={backend_used}", flush=True)` + fallback 시 `print(f"[init_db] FALLBACK reason={reason}", file=sys.stderr, flush=True)`. 텔레그램은 외부 의존 (네트워크/dedup) 으로 신뢰성 한계, journal 은 systemd 보장 + N12 패치로 이미 timestamp/auto-rotate 확보. 회귀 테스트 1건 (`test_n22_init_db_result_visible_in_journal`: 정적 검사 — print 패턴 + sys import + stderr 분리 검증). 전체 테스트 통과 |
 | 2026-05-04 | N12+N19+N20 | **안전 패치 풀 패키지** — 4/28 02:25 KST 이후 6일간 `run_executor` 단독 hang 사건(예외 없음 → `_supervise` 못 잡음) 재발 방지. 사용자 합의 흐름 변경: B3 판단일 5/9 → 5/18+ 연기, 페이퍼 카운트 0일부터 재개. **N12** (로그 가시성): `deploy/daily30k.service` `StandardOutput/Error=journal` + `SyslogIdentifier=daily30k` 전환. systemd-journald 자동 timestamp(microsecond UTC) + auto-rotate(SystemMaxUse 기본 10% disk) + `journalctl --since "Apr 28 02:00"` 시간 쿼리 + `-p err` 에러 필터 가능. setup.sh/update.sh/advise.sh 로그 명령 `tail -f logs/*.log` → `journalctl -u daily30k -f` 갱신. 사후 디버깅 거의 불가능했던 게 이번 사건의 가장 큰 교훈. **N19** (watchdog): `BotState.executor_heartbeat: float = 0.0` 추가 + `_supervise(watchdog_timeout=600.0, heartbeat_attr="executor_heartbeat")` 매개변수 추가. 폴링 주기 `min(60, watchdog_timeout/4)` 로 `asyncio.wait_for(asyncio.shield(task), poll_interval)` 반복 → 600초 무갱신 시 `task.cancel()` + `TimeoutError` 발생 → 기존 except 블록이 잡고 SUPERVISOR_RESTART 페이로드에 `is_watchdog: true` 기록. heartbeat 갱신 위치 2곳: executor 메인 while 루프 첫 줄(매 1초마다 갱신), `recover_state` 매 자산 처리 시작점(testnet 다중 청산 throttle 0.3s × N 동안에도 watchdog 가 hang 으로 오인하지 않도록). recover_state 시그니처 `(exchange, state=None)` 으로 옵셔널 추가, 기존 테스트 호환 유지. **N20** (await timeout): `_retry_api(timeout=60.0)` 매개변수 추가, 각 시도를 `asyncio.wait_for(fn(*args, **kwargs), timeout=timeout)` 으로 감쌈. ccxt 호출 6종(fetch_balance/fetch_ticker/fetch_ohlcv/fetch_open_orders/cancel_order/create_order) 단일 진입점이라 파급 최소. 타임아웃은 일반 예외와 동일하게 다음 시도로 넘어감(지수 백오프 1→2→4초), 최종 시도까지 실패 시 raise. 회귀 테스트 5건: `test_n12_service_uses_journald` (StandardOutput=journal+SyslogIdentifier+append: 잔재 검사), `test_n19_supervise_cancels_hung_executor` (heartbeat 무갱신 → watchdog cancel → 재시작 1회 + is_watchdog 페이로드), `test_n19_supervise_normal_executor_no_false_trigger` (정상 heartbeat → 재시작 0건), `test_n20_retry_api_times_out_on_hung_call` (max_retries=2 모두 timeout → TimeoutError raise), `test_n20_retry_api_normal_call_unaffected` (정상 호출 결과 반환). 전체 테스트 통과 |
 | 2026-04-28 | OPS2 | **Supabase KST View 3개 추가** — 대시보드 `created_at` 컬럼이 UTC `+00` 으로 표시되어 한국 시간 환산 불편 해소. [deploy/schema.sql](deploy/schema.sql) 끝에 `trades_kst` / `equity_snapshots_kst` / `bot_events_kst` 3개 `CREATE OR REPLACE VIEW` 추가, 각 View 가 원본 컬럼 그대로 노출하되 `(created_at AT TIME ZONE 'Asia/Seoul')::timestamp` 변환으로 KST timezone-naive 표시. 봇 base 테이블/persistence/test 영향 없음. 사용자 액션: Supabase SQL Editor 에서 신규 View 부분만 실행(멱등). 봇 재시작 불필요 |
