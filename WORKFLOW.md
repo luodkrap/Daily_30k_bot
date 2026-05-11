@@ -9,10 +9,10 @@
 
 | 항목 | 값 |
 |------|----|
-| **현재 Phase** | **Phase 7 운영 — N27 배포 완료, N28 패치 작성 완료·배포 대기 (2026-05-11)**. N27 배포(commit `fafdf5b`) 직후 silent fallback 발동 → N28 (`statement_cache_size=0`) 즉시 패치. 이전 Phase 정보: 5/10 20:08 KST 일일 목표 달성 후 봇 영구 종료(systemd `Restart=on-failure` + DAILY_STOP 가 `kill_event.set()`+`break` → main exit(0)) → 5/11 자정 자동 재개 실패 → 텔레그램·Supabase 24시간+ 침묵. **N27 패치**: `executor.py` DAILY_STOP 분기에서 `kill_event.set()` 제거 + 자정까지 sleep loop(`kill_event.wait()` 폴링) → 자정 도달 시 `reset_daily()` + `DAILY_RESUME` 이벤트 + 매매 자동 재개. KILL_SWITCH 분기는 그대로(손실 한도는 명시적 봇 종료가 정답). 회귀 테스트 1건 추가(`test_n27_daily_stop_does_not_terminate_supervisor` — 동적 kill_event 단언 + 정적 코드 검증). 전체 단위 테스트 통과. **배포 대기**: `git push` + `bash deploy/update.sh` + 텔레그램 `[MODE=TESTNET]` 부팅 메시지 재수신 + 5/11 매매 재개. 페이퍼 카운터 5/11 재시작 기준 0일부터 또 재시작, B3 판단일 5/25+ 연기. **N25 (engine idle) 미해결** — 24시간 매매 0건 또는 equity_snapshot 30분 끊김 발견 시 즉시 py-spy 진단 필수. |
-| **마지막 점검** | 2026-05-11 (N27 결함 진단·패치·테스트 완료, 배포 대기) |
+| **현재 Phase** | **Phase 7 운영 — N27+N28 배포 완료, 관찰 모드 재진입 (2026-05-11 17:59 KST 재시작)**. N27 commit `fafdf5b` 17:51 배포 직후 silent fallback 노출 → N28 commit `df68d45` 17:59 배포 → `[DEGRADED]` 부재 + Supabase backend 정상 init + ETH/USDT 그리드 5/5 배치 완료 검증. 페이퍼 카운터 5/11 17:59 기준 0일부터 또 재시작, B3 판단일 2026-05-25. **다음 검증 포인트**: (1) 다음 DAILY_STOP 발동일 자정에 `[리셋] ... 매매 재개` 텔레그램 + `DAILY_RESUME` 이벤트 도달 (N27 핵심), (2) Supabase 대시보드 `trades_kst`/`equity_snapshots_kst`/`bot_events_kst` 5/11 17:59 이후 신규 적재 (N28 핵심). 이전 Phase 정보: 5/10 20:08 KST 일일 목표 달성 후 봇 영구 종료(systemd `Restart=on-failure` + DAILY_STOP 가 `kill_event.set()`+`break` → main exit(0)) → 5/11 자정 자동 재개 실패 → 텔레그램·Supabase 24시간+ 침묵. **N27 패치**: `executor.py` DAILY_STOP 분기에서 `kill_event.set()` 제거 + 자정까지 sleep loop(`kill_event.wait()` 폴링) → 자정 도달 시 `reset_daily()` + `DAILY_RESUME` 이벤트 + 매매 자동 재개. KILL_SWITCH 분기는 그대로(손실 한도는 명시적 봇 종료가 정답). 회귀 테스트 1건 추가(`test_n27_daily_stop_does_not_terminate_supervisor` — 동적 kill_event 단언 + 정적 코드 검증). 전체 단위 테스트 통과. **배포 대기**: `git push` + `bash deploy/update.sh` + 텔레그램 `[MODE=TESTNET]` 부팅 메시지 재수신 + 5/11 매매 재개. 페이퍼 카운터 5/11 재시작 기준 0일부터 또 재시작, B3 판단일 5/25+ 연기. **N25 (engine idle) 미해결** — 24시간 매매 0건 또는 equity_snapshot 30분 끊김 발견 시 즉시 py-spy 진단 필수. |
+| **마지막 점검** | 2026-05-11 17:59 KST (N27+N28 배포 완료, 관찰 모드 재진입) |
 | **점검 누적** | 5/4 |
-| **남은 블로커** | 없음 (N27 패치 작성 완료, 배포만 남음) — 단 N25(engine idle) 미해결로 다음 발동 시 재발 가능. 재발 시 즉시 `py-spy dump --pid <PID>` 로 stack trace 확보 필수 |
+| **남은 블로커** | 없음 (N27+N28 패치 배포 완료) — 단 N25(engine idle) 미해결로 다음 발동 시 재발 가능. 재발 시 즉시 `py-spy dump --pid <PID>` 로 stack trace 확보 필수 |
 | **테스트 상태** | 전체 통과 (`python test.py` 기본 실행으로 Phase 3/4 + bugfix + Phase 6/7 전부 커버) |
 | **로드맵 플랜** | `~/.claude/plans/streamed-launching-cascade.md` (2026-04-22 승인 — 역할 분담·타임라인) |
 
