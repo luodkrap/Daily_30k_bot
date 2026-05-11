@@ -2226,6 +2226,24 @@ async def _test_n27_async():
     print("  [PASS] n27_daily_stop_no_terminate: kill_event 미설정 + 자정 재개 분기 확인")
 
 
+def test_n28_supabase_pool_disables_statement_cache():
+    """N28 (2026-05-11 사건): Supabase Transaction Pooler(pgbouncer 6543) 는
+    transaction-mode 라 prepared statement 캐시 충돌 발생.
+    `DuplicatePreparedStatementError: prepared statement "__asyncpg_stmt_N__" already exists`
+    → silent fallback 발동 → 운영 데이터가 SQLite 로 빠짐. 처방: asyncpg.create_pool
+    호출에 `statement_cache_size=0` 명시. 정적 검증 — 실제 connection 통합 테스트는 CI 환경
+    의존성으로 회피."""
+    import inspect
+    import persistence
+
+    src = inspect.getsource(persistence.SupabaseBackend.init)
+    assert "statement_cache_size=0" in src, (
+        "N28: SupabaseBackend.init 에 statement_cache_size=0 누락 — "
+        "pgbouncer Transaction Pool 모드와 충돌 → silent fallback 재발."
+    )
+    print("  [PASS] n28_supabase_pool_no_cache: statement_cache_size=0 명시 확인")
+
+
 def test_n2_notifier_failure_also_swallowed():
     """N2: notifier 자체 장애(텔레그램 다운 등)에도 persistence 공개 함수는 예외 미전파."""
     import persistence
@@ -2398,6 +2416,10 @@ if __name__ == "__main__":
         print("\n=== Phase 7: N27 DAILY_STOP 봇 종료 방지 (자동 재개) ===")
         test_n27_daily_stop_does_not_terminate_supervisor()
         print("Phase 7 N27 자동 재개 단위 테스트 통과!")
+
+        print("\n=== Phase 7: N28 Supabase pgbouncer 호환 (statement_cache_size=0) ===")
+        test_n28_supabase_pool_disables_statement_cache()
+        print("Phase 7 N28 silent fallback 방지 단위 테스트 통과!")
 
     if mode == "unit":
         # 기본 실행: 모든 오프라인 단위 테스트 (Phase 3/4 + bugfix + Phase 6/7).

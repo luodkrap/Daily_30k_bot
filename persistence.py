@@ -189,8 +189,14 @@ class SupabaseBackend:
 
     async def init(self) -> None:
         import asyncpg  # 지연 임포트 — sqlite 백엔드에서 미설치여도 돌아가게
+        # N28 (2026-05-11 사건): Supabase Transaction Pooler(pgbouncer 6543) 는
+        # transaction-mode 라 prepared statement 가 다른 백엔드에 라우팅되면
+        # `__asyncpg_stmt_N__` 이름 충돌 → DuplicatePreparedStatementError → silent
+        # fallback. statement_cache_size=0 으로 server-side prepare 우회 (asyncpg 가
+        # 매 쿼리 inline parameter 로 송신). 봇 쿼리 빈도(초당 1회 미만)라 성능 영향 무시.
         self._pool = await asyncpg.create_pool(
             self.dsn, min_size=1, max_size=5, command_timeout=10,
+            statement_cache_size=0,
         )
         # 스키마 존재 검증 — deploy/schema.sql 미적용 시 조기 실패
         async with self._pool.acquire() as conn:
