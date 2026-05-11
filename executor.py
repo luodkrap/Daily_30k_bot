@@ -738,10 +738,14 @@ async def run_executor(state: BotState, exchange) -> None:
                                            _emsell_err)
                 break
 
-            # ── 3. 일일 목표 수익 달성 → 하드 스탑 ──
+            # ── 3. 일일 목표 수익 달성 → executor 만 자정까지 일시 중단 ──
+            # N27 (2026-05-11 사건): 이전 코드는 kill_event.set()+break 로 main 의
+            # 모든 _supervise 가 종료 → systemd Restart=on-failure 정책상 정상 종료(exit 0)
+            # 는 재시작 안 함 → 봇 영구 종료. 5/10 20:08 KST 일일 목표 달성 후 다음 날
+            # 자동 재개 실패. 패치: kill_event 호출 제거, 자정까지 sleep loop 로 대기
+            # (heartbeat 갱신으로 watchdog 안전), 자정 reset 후 매매 재개. DAILY_STOP
+            # 이벤트는 정확히 1건만 기록 (sleep 안에서 should_stop_profit 재평가 없음).
             if state.should_stop_profit:
-                # N26: kill_event.set() 을 emergency_sell 보다 먼저 호출 (위와 동일 사유).
-                state.kill_event.set()
                 reason = "목표 수익 달성" if state.daily_pnl >= 0 else "조기 중단 (시장 악화)"
                 await notify_daily_stop(reason, state.daily_pnl)
                 await _log_event(
@@ -754,7 +758,25 @@ async def run_executor(state: BotState, exchange) -> None:
                     except Exception as _emsell_err:
                         await notify_error("Executor.emergency_sell on DAILY_STOP",
                                            _emsell_err)
-                break
+                    engine = None
+                while not state.kill_event.is_set():
+                    state.executor_heartbeat = time.time()
+                    if datetime.date.today() != today:
+                        today = datetime.date.today()
+                        state.reset_daily()
+                        await send(f"[리셋] {today} 일일 집계 초기화 — 매매 재개")
+                        await _log_event(
+                            "DAILY_RESUME", "INFO", "일일 리셋 후 매매 재개",
+                            {"date": str(today)},
+                        )
+                        break
+                    # kill_event.wait() 기반 폴링 — 외부 종료 신호 즉시 응답.
+                    # 30초마다 자정 체크 (단순 sleep 은 kill_event 무시하여 종료 지연).
+                    try:
+                        await asyncio.wait_for(state.kill_event.wait(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        pass
+                continue
 
             # ── 4. 200MA 체크 + 환율 갱신 + equity snapshot (30분마다) ──
             now = time.time()

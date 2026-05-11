@@ -2133,6 +2133,99 @@ async def _test_n26_kill_switch_async():
     print(f"  [PASS] n26_kill_switch_no_spam: KILL_SWITCH {kill_count}건, kill_event=True")
 
 
+def test_n27_daily_stop_does_not_terminate_supervisor():
+    """N27 (2026-05-10 사건): DAILY_STOP 분기가 kill_event.set() 을 호출하면
+    main 의 모든 _supervise(screener/executor/telegram) 가 종료 → main() 정상 exit(0)
+    → systemd Restart=on-failure 정책상 정상 종료는 재시작 안 함 → 봇 영구 종료
+    → 다음 날 자정 자동 재개 불가능. 5/10 20:08 KST 일일 목표 달성 후 5/11 까지
+    텔레그램·Supabase 둘 다 침묵.
+
+    패치: DAILY_STOP 분기에서 kill_event 호출 제거 + 자정까지 sleep loop 로 대기
+    (executor 만 일시 중단, screener/telegram 은 계속), 자정 reset_daily 후 매매 재개."""
+    asyncio.run(_test_n27_async())
+
+
+async def _test_n27_async():
+    import inspect
+    import config
+    import executor as executor_mod
+    from shared_state import BotState
+
+    class _DailyStopEngine(_N26FailingEngineBase):
+        _trigger_pnl = config.DAILY_TARGET + 100  # should_stop_profit=True
+
+        async def emergency_sell(self, reason):
+            return None  # 5/10 사건은 emergency_sell 정상 통과 → 그래도 봇 종료된 케이스
+
+    captured_events, restore = _n26_install_mocks(_DailyStopEngine)
+
+    state = BotState()
+    state.target_coin = "BTC/USDT"
+
+    class _Ex:
+        pass
+
+    ex = _Ex()
+
+    daily_stop_seen = asyncio.Event()
+    orig_log_event = executor_mod._log_event
+
+    async def spy_log_event(ev_type, sev, msg, payload=None):
+        await orig_log_event(ev_type, sev, msg, payload)
+        if ev_type == "DAILY_STOP":
+            daily_stop_seen.set()
+
+    executor_mod._log_event = spy_log_event
+
+    kill_state_after_daily_stop = {"value": None}
+
+    async def force_stop():
+        await daily_stop_seen.wait()
+        # DAILY_STOP 기록 후 sleep loop 진입까지 잠시 대기
+        await asyncio.sleep(0.3)
+        # ★ 핵심 단언: DAILY_STOP 분기는 kill_event 를 set 하면 안 됨
+        kill_state_after_daily_stop["value"] = state.kill_event.is_set()
+        # 이제 외부에서 set 하여 봇 정리 종료
+        state.kill_event.set()
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(
+                executor_mod.run_executor(state, ex),
+                force_stop(),
+            ),
+            timeout=10.0,
+        )
+    finally:
+        executor_mod._log_event = orig_log_event
+        restore()
+
+    assert daily_stop_seen.is_set(), "DAILY_STOP 이벤트 미기록 — 테스트 셋업 결함"
+    assert kill_state_after_daily_stop["value"] is False, (
+        "N27: DAILY_STOP 직후 kill_event 가 set 됨 — "
+        "main 의 _supervise 들이 종료되어 봇 영구 정지. "
+        "5/10 20:08 사건 재발."
+    )
+
+    # 정적 검증: 자정 자동 재개 분기 존재 (재개 가시성 확보)
+    src = inspect.getsource(executor_mod.run_executor)
+    ds_start = src.find("if state.should_stop_profit:")
+    next_block = src.find("# ── 4.", ds_start)
+    assert ds_start >= 0 and next_block > ds_start, "DAILY_STOP 블록 구조 변경 — 테스트 갱신 필요"
+    ds_src = src[ds_start:next_block]
+    assert "reset_daily" in ds_src, (
+        "N27: DAILY_STOP 분기에 reset_daily() 호출 없음 — 자정 자동 재개 누락."
+    )
+    assert "DAILY_RESUME" in ds_src, (
+        "N27: DAILY_STOP 분기에 DAILY_RESUME 이벤트 없음 — 재개 가시성 누락."
+    )
+    assert "kill_event.set" not in ds_src, (
+        "N27: DAILY_STOP 분기에 kill_event.set() 호출 — 봇 종료 결함 재발."
+    )
+
+    print("  [PASS] n27_daily_stop_no_terminate: kill_event 미설정 + 자정 재개 분기 확인")
+
+
 def test_n2_notifier_failure_also_swallowed():
     """N2: notifier 자체 장애(텔레그램 다운 등)에도 persistence 공개 함수는 예외 미전파."""
     import persistence
@@ -2301,6 +2394,10 @@ if __name__ == "__main__":
         test_n26_daily_stop_no_spam_when_emergency_sell_raises()
         test_n26_kill_switch_no_spam_when_emergency_sell_raises()
         print("Phase 7 N26 spam 방지 단위 테스트 통과!")
+
+        print("\n=== Phase 7: N27 DAILY_STOP 봇 종료 방지 (자동 재개) ===")
+        test_n27_daily_stop_does_not_terminate_supervisor()
+        print("Phase 7 N27 자동 재개 단위 테스트 통과!")
 
     if mode == "unit":
         # 기본 실행: 모든 오프라인 단위 테스트 (Phase 3/4 + bugfix + Phase 6/7).
