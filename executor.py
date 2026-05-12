@@ -233,12 +233,29 @@ class GridEngine:
                     break
                 # status == "open" / "partial" 등은 계속 대기
 
-            # 타임아웃 또는 외부 취소 → 정리 후 재시도
+            # 타임아웃 또는 외부 취소 → 정리 + 부분 체결 회수 확인
             if not external_cancel:
                 try:
                     await self.exchange.cancel_order(order_id, self.symbol)
                 except Exception:
                     pass
+
+            # Codex F3 (HIGH): cancel 직후 fetch_order 로 최종 상태 재확인.
+            # 부분 체결 (filled>0) 후 취소된 경우 보유분을 호출자에게 반환해
+            # 그리드 미배치 또는 의도 초과 포지션 형성을 방지한다.
+            try:
+                final = await _retry_api(
+                    self.exchange.fetch_order, order_id, self.symbol,
+                )
+                final_filled = float(final.get("filled") or 0.0)
+                final_avg = final.get("average")
+                if final_filled > 0:
+                    return (float(final_avg) if final_avg else buy_price,
+                            final_filled)
+            except Exception:
+                # fetch_order 까지 실패 — 보수적으로 재시도 진행 (기존 동작)
+                pass
+
             if attempt < max_attempts - 1:
                 await send(
                     f"[그리드] 초기 매수 미체결 — 가격 재조정 "
@@ -336,7 +353,13 @@ class GridEngine:
 
     # ── 주문 모니터링 ────────────────────────────────
     async def monitor_orders(self) -> None:
-        """1초 폴링: 미체결 목록과 비교하여 체결된 주문 감지."""
+        """1초 폴링: 미체결 목록과 비교 + 사라진 주문은 fetch_order 로 최종 확인.
+
+        Codex F2 (HIGH): 기존 로직은 open_orders 에 없으면 무조건 체결 간주.
+        외부 취소·expired·rejected·부분 체결 후 취소까지 "완전 체결" 로 처리되어
+        total_qty / avg_price / PnL 오염. 사라진 주문마다 fetch_order 로
+        status/filled/average 를 재확인하고 분기 처리.
+        """
         open_orders = await _retry_api(self.exchange.fetch_open_orders, self.symbol)
         open_ids = {o["id"] for o in open_orders}
 
@@ -344,21 +367,96 @@ class GridEngine:
         buy_snapshot = list(self.buy_orders)
         sell_snapshot = list(self.sell_orders)
 
-        # 매수 체결 감지
         for oid in buy_snapshot:
             if oid not in open_ids and oid in self.buy_orders:
-                await self._handle_buy_fill(oid, self.buy_orders[oid])
+                await self._resolve_missing_order(oid, side="buy")
 
-        # 매도 체결 감지
         for oid in sell_snapshot:
             if oid not in open_ids and oid in self.sell_orders:
-                await self._handle_sell_fill(oid, self.sell_orders[oid])
+                await self._resolve_missing_order(oid, side="sell")
 
-    async def _handle_buy_fill(self, order_id: str, info: dict) -> None:
-        """매수 체결 → 보유량 갱신 + 위에 매도 주문."""
-        del self.buy_orders[order_id]
-        qty = info["qty"]
-        price = info["price"]
+    async def _resolve_missing_order(self, order_id: str, side: str) -> None:
+        """오픈 주문 목록에서 사라진 주문의 최종 상태를 확인하고 적절히 분기.
+
+        분기:
+          - closed/filled + filled>0  → fill handler 호출 (실제 filled 수량 사용)
+          - canceled/expired/rejected:
+              * filled>0  → 부분 체결분만 반영 (체결 정확성 우선)
+              * filled==0 → 상태에서만 제거, PnL/total_qty 변경 없음
+          - 그 외 (pending 등) → 거래소 동기화 지연 가능, 다음 폴링까지 보류
+        """
+        book = self.buy_orders if side == "buy" else self.sell_orders
+        info = book.get(order_id)
+        if info is None:
+            return  # 다른 핸들러가 먼저 처리한 경우
+
+        try:
+            fetched = await _retry_api(
+                self.exchange.fetch_order, order_id, self.symbol,
+            )
+        except Exception as e:
+            # _retry_api 까지 실패 — 이번 사이클 보류, 다음 폴링에서 재시도
+            await notify_error(f"monitor_orders.fetch_order[{side}]", e)
+            return
+
+        status = (fetched.get("status") or "").lower()
+        filled = float(fetched.get("filled") or 0.0)
+        average = fetched.get("average")
+        actual_avg = float(average) if average else info["price"]
+
+        if status in ("closed", "filled") and filled > 0:
+            if side == "buy":
+                await self._handle_buy_fill(order_id, info,
+                                            actual_avg_price=actual_avg,
+                                            actual_fill_qty=filled)
+            else:
+                await self._handle_sell_fill(order_id, info,
+                                             actual_avg_price=actual_avg,
+                                             actual_fill_qty=filled)
+        elif status in ("canceled", "expired", "rejected"):
+            if filled > 0:
+                # 부분 체결 후 취소 — 체결분만 반영
+                if side == "buy":
+                    await self._handle_buy_fill(order_id, info,
+                                                actual_avg_price=actual_avg,
+                                                actual_fill_qty=filled)
+                else:
+                    await self._handle_sell_fill(order_id, info,
+                                                 actual_avg_price=actual_avg,
+                                                 actual_fill_qty=filled)
+                await _log_event(
+                    "ORDER_PARTIAL_CANCEL", "WARNING",
+                    f"{side} 주문 부분 체결 후 {status}",
+                    {"order_id": order_id, "symbol": self.symbol,
+                     "filled": filled, "requested": info.get("qty"),
+                     "status": status},
+                )
+            else:
+                # 미체결 취소 — 상태에서만 제거 (PnL 변경 없음)
+                book.pop(order_id, None)
+                await _log_event(
+                    "ORDER_CANCELED", "INFO",
+                    f"{side} 주문 미체결 {status}",
+                    {"order_id": order_id, "symbol": self.symbol,
+                     "status": status},
+                )
+        else:
+            # pending / open / partial — 거래소 동기화 지연, 다음 폴링까지 보류
+            pass
+
+    async def _handle_buy_fill(self, order_id: str, info: dict,
+                               actual_avg_price: float | None = None,
+                               actual_fill_qty: float | None = None) -> None:
+        """매수 체결 → 보유량 갱신 + 위에 매도 주문.
+
+        actual_avg_price/actual_fill_qty 가 주어지면 fetch_order 의 실제 체결값을
+        사용 (Codex F2). None 이면 info 의 배치 시점 값 사용 (호환성 유지).
+        """
+        self.buy_orders.pop(order_id, None)
+        qty = float(actual_fill_qty) if actual_fill_qty is not None else info["qty"]
+        price = float(actual_avg_price) if actual_avg_price is not None else info["price"]
+        if qty <= 0:
+            return  # 안전 가드
 
         # 평균 매수가 갱신
         old_cost = self.avg_price * self.total_qty
@@ -386,11 +484,19 @@ class GridEngine:
                 "price": sell_price, "qty": sell_qty, "grid_level": info["grid_level"],
             }
 
-    async def _handle_sell_fill(self, order_id: str, info: dict) -> None:
-        """매도 체결 → 수익 기록 + 아래에 매수 재배치."""
-        del self.sell_orders[order_id]
-        qty = info["qty"]
-        sell_price = info["price"]
+    async def _handle_sell_fill(self, order_id: str, info: dict,
+                                actual_avg_price: float | None = None,
+                                actual_fill_qty: float | None = None) -> None:
+        """매도 체결 → 수익 기록 + 아래에 매수 재배치.
+
+        actual_avg_price/actual_fill_qty 가 주어지면 fetch_order 의 실제 체결값을
+        사용 (Codex F2). None 이면 info 의 배치 시점 값 사용 (호환성 유지).
+        """
+        self.sell_orders.pop(order_id, None)
+        qty = float(actual_fill_qty) if actual_fill_qty is not None else info["qty"]
+        sell_price = float(actual_avg_price) if actual_avg_price is not None else info["price"]
+        if qty <= 0:
+            return
 
         self.total_qty -= qty
 
@@ -410,52 +516,131 @@ class GridEngine:
                 "price": buy_price, "qty": buy_qty, "grid_level": info["grid_level"],
             }
 
+    # ── 안전 청산 헬퍼 (Codex F1) ────────────────────
+    async def _safe_liquidate(self, reason: str) -> bool:
+        """안전 청산: cancel_all() 먼저 → 잔고 재동기화 → 시장가 매도.
+
+        Codex 적대적 리뷰 F1 (CRITICAL): 기존 청산 경로는 시장가 매도를 먼저
+        실행한 뒤 cancel_all() 을 호출했으나, Binance spot 의 열린 limit sell 이
+        보유 코인을 used 잔고로 잠가 free 부족으로 시장가 거절될 수 있었음.
+        손절·일일손실한도·수익중단·코인스위칭·봇종료 5곳 모두 같은 결함 노출.
+
+        새 흐름:
+          1. cancel_all() 먼저 — 잠긴 잔고 해제
+          2. 짧은 대기 후 fetch_balance 재동기화
+          3. free 수량 (또는 fallback total_qty) precision 보정 → 시장가 매도
+          4. 성공 시 상태 0 리셋, 실패 시 상태 유지 + CRITICAL 알림
+
+        Returns: True = 청산 성공 (상태 0 리셋 완료),
+                 False = 실패 (상태 유지, 호출자가 재시도 결정).
+        """
+        # 1. 그리드 주문 먼저 취소 — 잠긴 잔고 해제
+        await self.cancel_all()
+
+        # 2. 거래소가 취소를 반영할 시간 부여 (rate limit + 내부 처리 지연)
+        await asyncio.sleep(0.5)
+
+        # 3. 실제 free 잔고 재동기화
+        try:
+            balance = await _retry_api(self.exchange.fetch_balance)
+        except Exception as e:
+            await notify_error("Engine._safe_liquidate.fetch_balance", e)
+            await send(
+                f"[CRITICAL] {self.symbol} 청산 실패 — 잔고 조회 불가\n"
+                f"사유: {e}\n잔존 추정 {self.total_qty:.6f} — 다음 루프 재시도"
+            )
+            await _log_event(
+                "LIQUIDATE_FAILED", "CRITICAL",
+                f"청산 실패 (balance fetch error): {reason}",
+                {"symbol": self.symbol, "reason": reason,
+                 "total_qty": self.total_qty, "error": str(e)},
+            )
+            return False
+
+        base_ccy = self.symbol.split("/")[0]
+        free_qty = float((balance.get(base_ccy, {}) or {}).get("free", 0.0) or 0.0)
+        # free=0 이면 self.total_qty 로 fallback (거래소 동기화 지연 또는 mock 환경).
+        # 거래소에서 잠긴 잔고는 cancel_all 직후 free 로 환원돼야 함.
+        candidate_qty = free_qty if free_qty > 0 else self.total_qty
+        sell_qty = self._round_qty(candidate_qty)
+
+        if sell_qty <= 0:
+            # 보유 자체가 없음 — 이미 청산된 케이스
+            self.total_qty = 0.0
+            self.avg_price = 0.0
+            self.total_invested = 0.0
+            await send(f"[청산] {reason} — {self.symbol} 보유 잔고 0")
+            return True
+
+        # 4. 시장가 매도
+        try:
+            current_price = await self._get_current_price()
+            order = await _retry_api(
+                self.exchange.create_order,
+                self.symbol, "market", "sell", sell_qty,
+            )
+            fill_price = order.get("average") or current_price
+            if self.avg_price > 0:
+                net_krw = await self._record_trade(fill_price, sell_qty)
+                await send(
+                    f"[청산] {reason} — {self.symbol} @ ${fill_price:,.2f}\n"
+                    f"수량: {sell_qty:.6f} | 손익: {net_krw:,.0f}원"
+                )
+            else:
+                # avg_price 미설정 — PnL 계산 불가 (recover_state 잔존 케이스 등)
+                await _log_trade(self.symbol, "SELL", sell_qty, fill_price, 0.0, 0.0)
+                await send(
+                    f"[청산] {reason} — {self.symbol} @ ${fill_price:,.2f}\n"
+                    f"수량: {sell_qty:.6f} (avg_price 미설정, PnL 미기록)"
+                )
+            self.total_qty = 0.0
+            self.avg_price = 0.0
+            self.total_invested = 0.0
+            return True
+        except Exception as e:
+            await notify_error(f"Engine._safe_liquidate.create_order ({reason})", e)
+            await send(
+                f"[CRITICAL] {self.symbol} 청산 실패 — 시장가 매도 거절\n"
+                f"사유: {e}\nfree={free_qty:.6f} | 잔존 {self.total_qty:.6f} — 재시도"
+            )
+            await _log_event(
+                "LIQUIDATE_FAILED", "CRITICAL",
+                f"청산 실패 (market sell rejected): {reason}",
+                {"symbol": self.symbol, "reason": reason,
+                 "free_qty": free_qty, "total_qty": self.total_qty,
+                 "error": str(e)},
+            )
+            return False
+
     # ── 손절매 ───────────────────────────────────────
     async def check_stop_loss(self, current_price: float) -> bool:
-        """현재가 < 평균매수가 × (1 - STOP_LOSS_RATE) → 전량 시장가 매도."""
+        """현재가 < 평균매수가 × (1 - STOP_LOSS_RATE) → 안전 청산."""
         if self.total_qty <= 0 or self.avg_price <= 0:
             return False
         if current_price >= self.avg_price * (1 - STOP_LOSS_RATE):
             return False
 
-        # 전량 시장가 매도
-        await _retry_api(
-            self.exchange.create_order,
-            self.symbol, "market", "sell", self.total_qty,
+        success = await self._safe_liquidate(
+            f"손절매 @ ${current_price:,.2f} (avg ${self.avg_price:,.2f})"
         )
-        # 손실 기록 (매수 수수료는 매수 체결 시점에 이미 차감됨 → 매도 수수료만 반영)
-        loss_krw = await self._record_trade(current_price, self.total_qty)
+        if not success:
+            # 청산 실패 — 상태 유지, 다음 루프에서 재시도
+            return False
 
-        await self.cancel_all()
-        self.total_qty = 0.0
-        self.avg_price = 0.0
-        self.total_invested = 0.0
         self.is_active = False
-
-        await send(
-            f"[손절매] {self.symbol} 전량 매도 @ ${current_price:,.2f}\n"
-            f"손실: {loss_krw:,.0f}원"
-        )
         return True
 
     # ── 긴급 전량 매도 ───────────────────────────────
     async def emergency_sell(self, reason: str) -> float:
-        """보유 물량 전량 시장가 매도 + PnL 기록. 킬 스위치·수익 중단·스위칭 공통."""
+        """보유 물량 안전 청산 + PnL 기록. 킬 스위치·수익 중단·스위칭 공통."""
         if self.total_qty > 0:
-            current_price = await self._get_current_price()
-            order = await _retry_api(
-                self.exchange.create_order,
-                self.symbol, "market", "sell", self.total_qty,
-            )
-            fill_price = order.get("average") or current_price
-            net_krw = await self._record_trade(fill_price, self.total_qty)
-            await send(
-                f"[긴급 매도] {reason} — {self.symbol} @ ${fill_price:,.2f}\n"
-                f"손익: {net_krw:,.0f}원"
-            )
-        await self.cancel_all()
-        self.total_qty = 0.0
-        self.avg_price = 0.0
+            success = await self._safe_liquidate(reason)
+            if not success:
+                # 청산 실패 — 상태 유지. kill_event 는 호출자가 결정.
+                return self.state.daily_pnl
+        else:
+            # 보유 없음 — 그리드 주문만 정리
+            await self.cancel_all()
         self.is_active = False
         return self.state.daily_pnl
 
@@ -477,20 +662,16 @@ class GridEngine:
 
     # ── 리그리딩 ─────────────────────────────────────
     async def regrid(self) -> None:
-        """현재가 기준으로 그리드 새로 배치. 기존 보유 물량은 먼저 시장가 매도."""
-        # 기존 보유 물량 시장가 매도 (이중 포지션 방지)
+        """현재가 기준으로 그리드 새로 배치. 기존 보유 물량은 안전 청산 후 재배치."""
+        # 기존 보유 물량 안전 청산 (이중 포지션 방지). 같은 F1 결함 회피.
         if self.total_qty > 0:
-            current_price = await self._get_current_price()
-            await _retry_api(
-                self.exchange.create_order,
-                self.symbol, "market", "sell", self.total_qty,
-            )
-            await self._record_trade(current_price, self.total_qty)
+            success = await self._safe_liquidate("리그리딩 사전 청산")
+            if not success:
+                await send(
+                    f"[리그리딩] {self.symbol} 사전 청산 실패 — 재배치 보류"
+                )
+                return  # 상태 유지, 다음 루프에서 재시도
 
-        await self.cancel_all()
-        self.total_qty = 0.0
-        self.avg_price = 0.0
-        self.total_invested = 0.0
         self.is_active = False
         await self.setup_grid()
         await send(f"[리그리딩] {self.symbol} 새 그리드 배치 @ ${self.base_price:,.2f}")

@@ -34,10 +34,25 @@ from notifier import send, notify_error, init_session, close_session
 
 
 async def run_telegram_bot(state: BotState) -> None:
-    """텔레그램 봇 — /status, /stop, /seed 처리."""
+    """텔레그램 봇 — /status, /stop, /seed 처리.
+
+    Codex F4 (HIGH): inbound 명령은 반드시 TELEGRAM_CHAT_ID_INT 와 일치하는
+    chat 만 허용. /stop (봇 종료) 와 /seed (포지션 사이징 변경) 가 제3자에게
+    노출되면 즉시 운영 사고로 이어지므로 핸들러 진입 전 filters.Chat 으로 차단.
+    """
     from telegram import Update
-    from telegram.ext import Application, CommandHandler, ContextTypes
-    from config import TELEGRAM_TOKEN
+    from telegram.ext import Application, CommandHandler, ContextTypes, filters
+    from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID_INT
+
+    if TELEGRAM_CHAT_ID_INT is None:
+        await send(
+            "[CRITICAL] TELEGRAM_CHAT_ID 미설정/형식오류 — 텔레그램 명령 비활성화\n"
+            "환경변수 TELEGRAM_CHAT_ID 를 본인 chat_id (정수) 로 설정 후 재시작 필요."
+        )
+        await state.kill_event.wait()
+        return
+
+    chat_filter = filters.Chat(chat_id=TELEGRAM_CHAT_ID_INT)
 
     async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         from notifier import notify_status
@@ -106,12 +121,13 @@ async def run_telegram_bot(state: BotState) -> None:
         )
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("status", status_cmd))
-    app.add_handler(CommandHandler("stop", stop_cmd))
-    app.add_handler(CommandHandler("seed", seed_cmd))
+    app.add_handler(CommandHandler("status", status_cmd, filters=chat_filter))
+    app.add_handler(CommandHandler("stop", stop_cmd, filters=chat_filter))
+    app.add_handler(CommandHandler("seed", seed_cmd, filters=chat_filter))
     app.bot_data["state"] = state
 
     print("[Telegram] 시작")
+    await send(f"[Telegram] 허가 chat_id={TELEGRAM_CHAT_ID_INT}")
     await app.initialize()
     await app.start()
     await app.updater.start_polling()

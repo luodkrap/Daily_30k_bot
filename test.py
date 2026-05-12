@@ -133,6 +133,8 @@ class MockExchange:
             is_filled = True
         else:
             is_filled = False
+        # 미체결(open) 주문은 filled=0 — 실제 거래소 동작과 일치시켜
+        # 외부 취소 시 fetch_order 가 filled=0 을 반환하도록 (Codex F3 회귀 방지).
         order = {
             "id": oid,
             "symbol": symbol,
@@ -140,8 +142,8 @@ class MockExchange:
             "side": side,
             "amount": amount,
             "price": price,
-            "filled": amount,
-            "average": fill_price,
+            "filled": amount if is_filled else 0.0,
+            "average": fill_price if is_filled else None,
             "status": "closed" if is_filled else "open",
         }
         self._orders[oid] = order
@@ -167,9 +169,13 @@ class MockExchange:
         return [[i, 99, 101, 99, self._ticker_price, 1_000_000] for i in range(limit or 201)]
 
     def simulate_fill(self, order_id):
-        """테스트 헬퍼: 지정가 주문을 체결 상태로 변경."""
+        """테스트 헬퍼: 지정가 주문을 체결 상태로 변경 (filled = amount)."""
         if order_id in self._orders:
-            self._orders[order_id]["status"] = "closed"
+            order = self._orders[order_id]
+            order["status"] = "closed"
+            order["filled"] = order["amount"]
+            if order.get("average") is None:
+                order["average"] = order.get("price") or self._ticker_price
             self._open_order_ids.discard(order_id)
 
 
@@ -2274,6 +2280,347 @@ def test_n2_notifier_failure_also_swallowed():
 
 
 # ─────────────────────────────────────────────────────────
+# Codex 적대적 리뷰 결함 4건 회귀 테스트 (F1·F2·F3·F4)
+# ─────────────────────────────────────────────────────────
+
+class MockExchangeOrderLog(MockExchange):
+    """호출 순서를 기록하는 MockExchange — F1 청산 순서 검증."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.call_log: list[tuple] = []
+
+    async def create_order(self, symbol, type_, side, amount, price=None):
+        self.call_log.append(("create_order", type_, side, amount))
+        return await super().create_order(symbol, type_, side, amount, price)
+
+    async def cancel_order(self, order_id, symbol):
+        self.call_log.append(("cancel_order", order_id))
+        return await super().cancel_order(order_id, symbol)
+
+    async def fetch_balance(self):
+        self.call_log.append(("fetch_balance",))
+        return await super().fetch_balance()
+
+
+class MockExchangeWithLockedBalance(MockExchange):
+    """ETH 잔고가 열린 sell 주문에 잠긴 상태 시뮬레이션 — F1 잔고 동기화 검증."""
+
+    def __init__(self, *args, base_ccy="ETH", base_free=0.0,
+                 base_locked=0.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._base_ccy = base_ccy
+        self._base_free = base_free
+        self._base_locked = base_locked
+
+    async def fetch_balance(self):
+        b = await super().fetch_balance()
+        b[self._base_ccy] = {
+            "free": self._base_free,
+            "used": self._base_locked,
+            "total": self._base_free + self._base_locked,
+        }
+        b["free"][self._base_ccy] = self._base_free
+        b["used"][self._base_ccy] = self._base_locked
+        b["total"][self._base_ccy] = self._base_free + self._base_locked
+        return b
+
+    async def cancel_order(self, order_id, symbol):
+        result = await super().cancel_order(order_id, symbol)
+        # 실거래 시뮬레이션: 마지막 sell 주문이 취소되면 잠긴 잔고가 free 로 환원
+        if not self._open_order_ids and self._base_locked > 0:
+            self._base_free += self._base_locked
+            self._base_locked = 0.0
+        return result
+
+    async def create_order(self, symbol, type_, side, amount, price=None):
+        # 시장가 매도: free 잔고 부족 시 거절 (실거래 Binance 동작 모사)
+        if side == "sell" and type_ == "market":
+            if amount > self._base_free + 1e-9:
+                raise Exception(
+                    f"InsufficientBalance: free={self._base_free}, requested={amount}"
+                )
+            self._base_free -= amount
+        return await super().create_order(symbol, type_, side, amount, price)
+
+
+class MockExchangePartialFill(MockExchange):
+    """fetch_order 응답에 부분 체결 정보를 주입 — F2/F3 부분 체결 검증."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._partial_overrides: dict[str, dict] = {}
+
+    def set_partial(self, order_id: str, filled: float,
+                    average: float, status: str = "canceled") -> None:
+        self._partial_overrides[order_id] = {
+            "filled": filled, "average": average, "status": status,
+        }
+
+    async def fetch_order(self, order_id, symbol):
+        order = await super().fetch_order(order_id, symbol)
+        if order_id in self._partial_overrides:
+            order = {**order, **self._partial_overrides[order_id]}
+        return order
+
+    async def fetch_open_orders(self, symbol=None):
+        orders = await super().fetch_open_orders(symbol)
+        return [o for o in orders if o["id"] not in self._partial_overrides]
+
+
+# ── F1: 안전 청산 순서 (cancel_all → market sell) ─────────
+
+def test_codex_f1_emergency_sell_cancels_first():
+    """F1: emergency_sell() 호출 시 cancel_order 가 시장가 매도보다 먼저 실행."""
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchangeOrderLog(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+    asyncio.run(_test_codex_f1_cancels_first_async(engine, ex))
+
+
+async def _test_codex_f1_cancels_first_async(engine, ex):
+    await engine.setup_grid()
+    ex.call_log.clear()
+
+    await engine.emergency_sell("F1 청산 순서 검증")
+
+    market_sell_idx = None
+    cancel_indices = []
+    for i, entry in enumerate(ex.call_log):
+        if entry[0] == "create_order" and entry[1] == "market" and entry[2] == "sell":
+            market_sell_idx = i
+        if entry[0] == "cancel_order":
+            cancel_indices.append(i)
+
+    assert market_sell_idx is not None, "market sell 호출 없음"
+    assert cancel_indices, "cancel_order 호출 없음"
+    assert all(c < market_sell_idx for c in cancel_indices), (
+        f"cancel_order 가 market sell 뒤에 호출됨: "
+        f"cancels={cancel_indices}, sell={market_sell_idx}"
+    )
+    print(f"  [PASS] codex_f1_cancels_first: cancels={cancel_indices}, "
+          f"market_sell@{market_sell_idx}")
+
+
+def test_codex_f1_emergency_sell_uses_free_balance():
+    """F1: 잠긴 잔고 시나리오에서 cancel 후 free 환원 → 정상 청산."""
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    # ETH 1.0 보유, 모두 sell 주문에 잠겨있음 (free=0, used=1.0)
+    ex = MockExchangeWithLockedBalance(
+        ticker_price=100.0, usdt_balance=5000.0,
+        base_ccy="ETH", base_free=0.0, base_locked=1.0,
+    )
+    engine = GridEngine("ETH/USDT", ex, state)
+    asyncio.run(_test_codex_f1_uses_free_balance_async(engine, ex, state))
+
+
+async def _test_codex_f1_uses_free_balance_async(engine, ex, state):
+    # setup_grid 우회 — locked balance 시나리오를 명확히 재현
+    engine.total_qty = 1.0
+    engine.avg_price = 100.0
+    engine.is_active = True
+    # 가짜 sell 주문 1건 — cancel_all 의 cancel_order 호출 대상
+    fake_sell = await ex.create_order("ETH/USDT", "limit", "sell", 1.0, 105.0)
+    engine.sell_orders[fake_sell["id"]] = {
+        "price": 105.0, "qty": 1.0, "grid_level": 1,
+    }
+
+    result = await engine.emergency_sell("F1 잠긴 잔고")
+
+    assert engine.total_qty == 0.0, f"청산 후 total_qty != 0: {engine.total_qty}"
+    assert engine.is_active is False, "청산 후 is_active 유지됨"
+    assert ex._base_locked == 0.0, "잠긴 잔고 미해제"
+    print(f"  [PASS] codex_f1_uses_free_balance: locked={ex._base_locked}, "
+          f"free 환원 후 정상 청산")
+
+
+# ── F2: monitor_orders 의 fetch_order 재확인 ──────────────
+
+def test_codex_f2_open_order_missing_fetches_status():
+    """F2: open_orders 누락 + fetch_order=canceled 시 PnL/total_qty 변경 없음."""
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+    asyncio.run(_test_codex_f2_canceled_async(engine, ex, state))
+
+
+async def _test_codex_f2_canceled_async(engine, ex, state):
+    # 미체결 매수 주문 1건 생성 → 외부에서 취소 (filled=0 유지)
+    fake_order = await ex.create_order("ETH/USDT", "limit", "buy", 1.0, 99.0)
+    engine.buy_orders[fake_order["id"]] = {
+        "price": 99.0, "qty": 1.0, "grid_level": 1,
+    }
+    await ex.cancel_order(fake_order["id"], "ETH/USDT")
+
+    pnl_before = state.daily_pnl
+    qty_before = engine.total_qty
+    sell_orders_before = len(engine.sell_orders)
+
+    await engine.monitor_orders()
+
+    assert engine.total_qty == qty_before, (
+        f"취소된 주문으로 total_qty 오염: {qty_before} → {engine.total_qty}"
+    )
+    assert state.daily_pnl == pnl_before, (
+        f"취소된 주문으로 PnL 오염: {pnl_before} → {state.daily_pnl}"
+    )
+    assert fake_order["id"] not in engine.buy_orders, (
+        "취소된 주문이 buy_orders 에 잔존"
+    )
+    assert len(engine.sell_orders) == sell_orders_before, (
+        "취소된 매수에서 잘못된 매도 그리드 생성됨"
+    )
+    print(f"  [PASS] codex_f2_canceled_not_filled: "
+          f"PnL={state.daily_pnl}, qty={engine.total_qty} 유지")
+
+
+def test_codex_f2_partial_fill_uses_actual_filled():
+    """F2: fetch_order.filled=0.3, info.qty=1.0 → total_qty 가 0.3 만 증가."""
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchangePartialFill(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+    asyncio.run(_test_codex_f2_partial_async(engine, ex, state))
+
+
+async def _test_codex_f2_partial_async(engine, ex, state):
+    fake_order = await ex.create_order("ETH/USDT", "limit", "buy", 1.0, 99.0)
+    engine.buy_orders[fake_order["id"]] = {
+        "price": 99.0, "qty": 1.0, "grid_level": 1,
+    }
+    # 부분 체결 후 취소: filled=0.3, average=99.5
+    ex.set_partial(fake_order["id"], filled=0.3, average=99.5, status="canceled")
+
+    qty_before = engine.total_qty
+    cost_before = engine.avg_price * engine.total_qty
+
+    await engine.monitor_orders()
+
+    expected_qty = qty_before + 0.3
+    assert abs(engine.total_qty - expected_qty) < 1e-6, (
+        f"실제 filled 미반영: 예상 {expected_qty}, 실제 {engine.total_qty}"
+    )
+    # 평균가도 actual avg(99.5) 로 계산되어야 함
+    expected_cost = cost_before + 99.5 * 0.3
+    actual_cost = engine.avg_price * engine.total_qty
+    assert abs(actual_cost - expected_cost) < 1e-3, (
+        f"avg_price 계산이 info.price(99) 사용: 예상 cost {expected_cost}, "
+        f"실제 {actual_cost}"
+    )
+    print(f"  [PASS] codex_f2_partial_fill: total_qty +0.3 정확 반영, "
+          f"avg=${engine.avg_price:.2f}")
+
+
+# ── F3: _limit_buy_with_retry 부분 체결 회수 ──────────────
+
+def test_codex_f3_limit_buy_returns_partial_fill():
+    """F3: 타임아웃 후 cancel + fetch_order.filled=0.6 → (avg, 0.6) 반환."""
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchangePartialFill(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+    asyncio.run(_test_codex_f3_partial_async(engine, ex))
+
+
+async def _test_codex_f3_partial_async(engine, ex):
+    engine.base_price = 99.0  # ticker(100) 보다 낮음 → 즉시 체결 안 됨
+
+    async def trigger_partial():
+        await asyncio.sleep(1.0)
+        for oid in list(ex._open_order_ids):
+            ex.set_partial(oid, filled=0.6, average=99.5, status="canceled")
+            await ex.cancel_order(oid, "ETH/USDT")
+
+    asyncio.create_task(trigger_partial())
+
+    fill_price, fill_qty = await engine._limit_buy_with_retry(
+        buy_usdt=100.0, max_attempts=3, timeout=3,
+    )
+
+    assert fill_qty > 0, "부분 체결 회수 실패 — (0, 0) 반환됨"
+    assert abs(fill_qty - 0.6) < 1e-6, f"부분 체결 수량 부정확: {fill_qty}"
+    assert abs(fill_price - 99.5) < 1e-6, f"부분 체결 평균가 부정확: {fill_price}"
+    print(f"  [PASS] codex_f3_partial_recovered: ({fill_price}, {fill_qty})")
+
+
+def test_codex_f3_limit_buy_full_zero_retries():
+    """F3 회귀 방지: filled=0 케이스는 기존처럼 (0.0, 0.0) 반환."""
+    from executor import GridEngine
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0, usdt_balance=5000.0)
+    engine = GridEngine("ETH/USDT", ex, state)
+    asyncio.run(_test_codex_f3_zero_async(engine, ex))
+
+
+async def _test_codex_f3_zero_async(engine, ex):
+    engine.base_price = 99.0
+
+    async def trigger_cancel():
+        await asyncio.sleep(1.0)
+        for oid in list(ex._open_order_ids):
+            await ex.cancel_order(oid, "ETH/USDT")
+
+    asyncio.create_task(trigger_cancel())
+
+    fill_price, fill_qty = await engine._limit_buy_with_retry(
+        buy_usdt=100.0, max_attempts=1, timeout=3,
+    )
+
+    assert (fill_price, fill_qty) == (0.0, 0.0), (
+        f"filled=0 케이스에서 회귀 (F3 패치가 기존 동작 깨뜨림): "
+        f"({fill_price}, {fill_qty})"
+    )
+    print(f"  [PASS] codex_f3_zero_retries: filled=0 → (0.0, 0.0) 유지")
+
+
+# ── F4: 텔레그램 권한 필터 ────────────────────────────────
+
+def test_codex_f4_unauthorized_chat_rejected():
+    """F4: filters.Chat 이 TELEGRAM_CHAT_ID_INT 와 다른 chat 의 명령을 거부."""
+    from telegram.ext import filters
+    import config
+
+    # filters.Chat 의 chat_ids 속성 검증 (frozenset[int])
+    AUTHORIZED = 123456789
+    chat_filter = filters.Chat(chat_id=AUTHORIZED)
+    assert AUTHORIZED in chat_filter.chat_ids, "허가된 chat_id 가 filter 에 없음"
+    assert 999999 not in chat_filter.chat_ids, "비인가 chat_id 가 filter 에 포함"
+
+    # config 의 TELEGRAM_CHAT_ID_INT 변환 로직 검증
+    assert hasattr(config, "TELEGRAM_CHAT_ID_INT"), (
+        "config 에 TELEGRAM_CHAT_ID_INT 누락 — F4 패치 미적용"
+    )
+    if config.TELEGRAM_CHAT_ID is not None:
+        try:
+            expected = int(config.TELEGRAM_CHAT_ID)
+            assert config.TELEGRAM_CHAT_ID_INT == expected, (
+                f"TELEGRAM_CHAT_ID_INT 변환 오류: "
+                f"{config.TELEGRAM_CHAT_ID_INT} != {expected}"
+            )
+        except (TypeError, ValueError):
+            # str 변환 불가 시 None — 부팅 시점에 봇이 안전하게 멈춤
+            assert config.TELEGRAM_CHAT_ID_INT is None
+
+    print(f"  [PASS] codex_f4_filter: chat_ids={chat_filter.chat_ids}, "
+          f"config.TELEGRAM_CHAT_ID_INT={config.TELEGRAM_CHAT_ID_INT}")
+
+
+# ─────────────────────────────────────────────────────────
 # Phase 3 통합 테스트 (온라인 — 실제 바이낸스 API 호출)
 # ─────────────────────────────────────────────────────────
 
@@ -2420,6 +2767,16 @@ if __name__ == "__main__":
         print("\n=== Phase 7: N28 Supabase pgbouncer 호환 (statement_cache_size=0) ===")
         test_n28_supabase_pool_disables_statement_cache()
         print("Phase 7 N28 silent fallback 방지 단위 테스트 통과!")
+
+        print("\n=== Codex 적대적 리뷰 결함 4건 회귀 (F1·F2·F3·F4) ===")
+        test_codex_f1_emergency_sell_cancels_first()
+        test_codex_f1_emergency_sell_uses_free_balance()
+        test_codex_f2_open_order_missing_fetches_status()
+        test_codex_f2_partial_fill_uses_actual_filled()
+        test_codex_f3_limit_buy_returns_partial_fill()
+        test_codex_f3_limit_buy_full_zero_retries()
+        test_codex_f4_unauthorized_chat_rejected()
+        print("Codex 적대적 리뷰 4건 회귀 테스트 통과!")
 
     if mode == "unit":
         # 기본 실행: 모든 오프라인 단위 테스트 (Phase 3/4 + bugfix + Phase 6/7).
