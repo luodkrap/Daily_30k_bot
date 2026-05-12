@@ -44,6 +44,12 @@ else:
     BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
 TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
+# inbound 명령 권한 필터용 정수 변환본 (filters.Chat 은 int 만 받음).
+# notifier 의 outbound sendMessage 는 str 도 통과하므로 TELEGRAM_CHAT_ID 는 유지.
+try:
+    TELEGRAM_CHAT_ID_INT = int(TELEGRAM_CHAT_ID) if TELEGRAM_CHAT_ID else None
+except (TypeError, ValueError):
+    TELEGRAM_CHAT_ID_INT = None
 
 # ─── 시드머니 ─────────────────────────────────────────────
 # .env의 SEED 값을 읽습니다. 텔레그램 /seed 커맨드로 변경 가능.
