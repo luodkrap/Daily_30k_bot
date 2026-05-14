@@ -2356,6 +2356,101 @@ def test_n28_supabase_pool_disables_statement_cache():
     print("  [PASS] n28_supabase_pool_no_cache: statement_cache_size=0 명시 확인")
 
 
+def test_n29b_log_event_critical_emits_stdout():
+    """N29-B (2026-05-13 사건): KILL_SWITCH 시 journal 에 단 1줄도 없어 진단 외란.
+    _log_event 가 CRITICAL/ERROR/WARN 을 stdout 에 동시 출력하는지 확인.
+    INFO 는 폭주 방지 위해 제외."""
+    import io
+    import contextlib
+    import persistence
+    from executor import _log_event
+
+    orig_backend = persistence._backend
+
+    class _NoopBackend:
+        async def record_event(self, *a, **kw):
+            return None
+        async def record_trade(self, *a, **kw):
+            return None
+        async def record_equity_snapshot(self, *a, **kw):
+            return None
+
+    persistence._backend = _NoopBackend()
+    try:
+        # CRITICAL — 반드시 출력
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            asyncio.run(_log_event("KILL_SWITCH", "CRITICAL",
+                                   "일일 손실 한도 초과",
+                                   {"daily_pnl_krw": -159166.0,
+                                    "limit_krw": 90000.0}))
+        out = buf.getvalue()
+        assert "[CRITICAL] KILL_SWITCH" in out, (
+            f"CRITICAL 이벤트 stdout 누락: {out!r}"
+        )
+        assert "일일 손실 한도 초과" in out, f"메시지 누락: {out!r}"
+        assert "daily_pnl_krw" in out, f"context payload 누락: {out!r}"
+
+        # WARN — 출력
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            asyncio.run(_log_event("N25_TRADE_IDLE", "WARNING",
+                                   "24시간 무거래 침묵", None))
+        assert "[WARNING] N25_TRADE_IDLE" in buf.getvalue(), (
+            "WARNING 이벤트 stdout 누락"
+        )
+
+        # INFO — 출력 안 됨 (journal 폭주 방지)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            asyncio.run(_log_event("EXECUTOR_START", "INFO",
+                                   "executor 시작", None))
+        assert buf.getvalue() == "", (
+            f"INFO 이벤트가 stdout 에 출력됨 (폭주 위험): {buf.getvalue()!r}"
+        )
+    finally:
+        persistence._backend = orig_backend
+
+    print("  [PASS] n29b_log_event_severity_stdout: CRITICAL/WARN stdout / INFO 침묵")
+
+
+def test_n29a_notify_death_script_valid():
+    """N29-A (2026-05-13 사건): KILL_SWITCH 후 봇 종료 → 34시간 침묵.
+    systemd ExecStopPost 훅 + notify_death.sh 가 외부 사망 알림을 보장하는지 정적 검증.
+    """
+    import os
+
+    script_path = os.path.join(os.path.dirname(__file__), "deploy", "notify_death.sh")
+    assert os.path.exists(script_path), (
+        f"N29-A: deploy/notify_death.sh 누락 — systemd ExecStopPost 훅 실행 불가."
+    )
+    assert os.access(script_path, os.X_OK), (
+        f"N29-A: {script_path} 실행 권한 부재 — systemd 가 호출해도 실행 실패."
+    )
+
+    with open(script_path) as f:
+        body = f.read()
+    assert "TELEGRAM_TOKEN" in body, "N29-A: notify_death.sh 가 TELEGRAM_TOKEN 미참조."
+    assert "TELEGRAM_CHAT_ID" in body, "N29-A: notify_death.sh 가 TELEGRAM_CHAT_ID 미참조."
+    assert "api.telegram.org" in body, "N29-A: 텔레그램 API 엔드포인트 누락."
+    assert "exit 0" in body, (
+        "N29-A: notify_death.sh 가 exit 0 으로 종료하지 않음 — "
+        "알림 실패가 systemd Restart 정책에 영향 줄 위험."
+    )
+
+    service_path = os.path.join(os.path.dirname(__file__), "deploy", "daily30k.service")
+    with open(service_path) as f:
+        service_body = f.read()
+    assert "ExecStopPost=" in service_body, (
+        "N29-A: daily30k.service 에 ExecStopPost 훅 누락 — 사망 알림 미연결."
+    )
+    assert "notify_death.sh" in service_body, (
+        "N29-A: ExecStopPost 가 notify_death.sh 를 가리키지 않음."
+    )
+
+    print("  [PASS] n29a_notify_death_script_valid: 사망 알림 훅 정적 검증 통과")
+
+
 def test_n2_notifier_failure_also_swallowed():
     """N2: notifier 자체 장애(텔레그램 다운 등)에도 persistence 공개 함수는 예외 미전파."""
     import persistence
@@ -2875,6 +2970,11 @@ if __name__ == "__main__":
         print("\n=== Phase 7: N28 Supabase pgbouncer 호환 (statement_cache_size=0) ===")
         test_n28_supabase_pool_disables_statement_cache()
         print("Phase 7 N28 silent fallback 방지 단위 테스트 통과!")
+
+        print("\n=== Phase 7: N29 KILL_SWITCH 가시성·사망 알림 ===")
+        test_n29b_log_event_critical_emits_stdout()
+        test_n29a_notify_death_script_valid()
+        print("Phase 7 N29 가시성·사망 알림 단위 테스트 통과!")
 
         print("\n=== Codex 적대적 리뷰 결함 4건 회귀 (F1·F2·F3·F4) ===")
         test_codex_f1_emergency_sell_cancels_first()

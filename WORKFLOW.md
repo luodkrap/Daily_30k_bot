@@ -9,9 +9,9 @@
 
 | 항목 | 값 |
 |------|----|
-| **현재 Phase** | **Phase 7 운영 — N25 engine idle 재발 감시 체계 보강 완료, 배포 대기 + 장기 보완 백로그 기록 완료 (2026-05-14 KST)**. 기존 N19 heartbeat watchdog 에 더해 `main._supervise()` 가 `progress_timeout`/`progress_attr` 를 감시하도록 확장 — executor heartbeat 가 살아있어도 `executor_last_snapshot_at` 이 45분 이상 무갱신이면 task cancel → `TimeoutError` → 기존 `SUPERVISOR_RESTART` 경로로 재시작. `BotState` 에 `executor_last_snapshot_at` / `executor_last_trade_at` / `n25_last_trade_idle_alert_at` 추가, `snapshot_equity()` 성공 시 snapshot progress 갱신, `_log_trade(..., state=...)` 성공 시 trade progress 갱신. 활성 엔진 상태에서 24시간 무거래 시 `N25_TRADE_IDLE` WARNING 이벤트/텔레그램 경고(alert-only). 5/14 사용자 요청으로 S1(DB resume)·S2(reconciliation)·S3(live preflight)·R4(전략 리포트)·M1(침묵 알림 확장)을 TODO 장기 보완 백로그에 기록. **다음 검증 포인트**: `bash deploy/update.sh` 배포 후 `[init_db] backend=supabase` + `[Telegram] 허가 chat_id=...` 확인, Supabase `bot_events` 에 `SUPERVISOR_RESTART` payload `is_watchdog=true` / `N25_TRADE_IDLE` 발생 여부 관찰, snapshot 이 정상 30분 주기로 계속 적재되는지 확인. 실제 재발 시 여전히 `py-spy dump --pid <PID>` 로 갇힌 await 위치 확보. |
-| **마지막 점검** | 2026-05-14 KST (장기 보완 백로그 기록 완료, N25 패치 배포 대기 유지) |
-| **점검 누적** | 5/5 |
+| **현재 Phase** | **Phase 7 운영 — N29 KILL_SWITCH 가시성·사망 알림 패치 완료, 배포 대기 (2026-05-15 KST)**. 5/13 13:09 KST testnet 가짜 폭락(testnet 가격 피드 mainnet 과 -9% 괴리: $81,168 vs $73,706)으로 손절매·KILL_SWITCH 연쇄 발동 → 봇 정상 종료(exit 0) → systemd `Restart=on-failure` 정책상 재시작 안 함 → **34시간 침묵** (도울님 /status 무응답으로 5/14 23:36 발견). Supabase 직접 진단으로 mode=testnet 확정·실손실 없음 확인. 두 결함 추출: **N29-B** `_log_event` 가 텔레그램·Supabase 만 호출하고 stdout 미출력 → KILL_SWITCH 시 journal 에 종료 라인만 4건, 사건 메시지 0건. 패치: `executor._log_event()` 가 CRITICAL/ERROR/WARN/WARNING 시 stdout 동시 출력(INFO 제외로 폭주 방지). **N29-A** 봇 사망 자체에 대한 외부 알림 부재 → 텔레그램 핸들러도 같이 죽어 봇 내부 알림 불가. 패치: `deploy/notify_death.sh` 신규 + `daily30k.service` `ExecStopPost` 훅 — systemd 가 직접 호출하므로 정상 종료·실패·OOM 모두 텔레그램 알림. `Restart=on-failure` 정책 유지(손실 한도 명시적 종료 원칙). 회귀 테스트 2건(`test_n29b_log_event_critical_emits_stdout`, `test_n29a_notify_death_script_valid`). 전체 단위 테스트 통과. **배포 절차**: `git push` → `bash deploy/update.sh` → `sudo systemctl daemon-reload` (.service 수정 반영) → `sudo systemctl restart daily30k`. |
+| **마지막 점검** | 2026-05-15 KST (N29 가시성·사망 알림 패치 완료, 배포 대기) |
+| **점검 누적** | 6/6 |
 | **남은 블로커** | 없음 — 단 N25 원인 await 자체는 실제 재발 stack trace 확보 전까지 미확정. 새 watchdog 이 snapshot 침묵을 재시작으로 전환하며, 재발 시 `py-spy dump --pid <PID>` 로 stack trace 확보 필수 |
 | **테스트 상태** | 전체 통과 (`python test.py` 기본 실행으로 Phase 3/4 + bugfix + Phase 6/7 전부 커버) |
 | **로드맵 플랜** | `~/.claude/plans/streamed-launching-cascade.md` (2026-04-22 승인 — 역할 분담·타임라인) |
@@ -38,16 +38,20 @@ python main.py
 
 ## 현재 작업
 
-> **(없음)** — N25 engine idle 재발 감시 체계 보강 완료 + 장기 보완 백로그 기록 완료, 배포 대기 (2026-05-14).
+> **(없음)** — N29 KILL_SWITCH 가시성·사망 알림 패치 완료, 배포 대기 (2026-05-15).
 >
-> **다음 세션 Claude 첫 액션**:
-> 1. `bash deploy/advise.sh` 로 배포 권장 명령 확인 후 `git push` + `bash deploy/update.sh` 실행
-> 2. 봇 부팅 후 `journalctl -u daily30k -f` 로 `[init_db] backend=supabase` + `[Telegram] 허가 chat_id=<int>` 두 줄 확인
-> 3. 텔레그램 본인 chat 에서 `/status` 정상 응답 + (가능하면) 다른 chat 에서 `/stop` 무응답 (필터 거부) 확인
-> 4. 24~48시간 관찰: 새 청산 메시지 형식 `[청산] ... | 수량 ... | 손익 ...원`, Supabase `bot_events` 의 `LIQUIDATE_FAILED` 0건 유지
-> 5. **N25 재발 감시** — `equity_snapshots` 30분 주기 유지, `SUPERVISOR_RESTART` payload `is_watchdog=true` 및 `N25_TRADE_IDLE` 이벤트 여부 확인. snapshot 침묵 재발 시 새 watchdog 이 45분 내 executor 재시작해야 하며, 실제 hang 이 보이면 즉시 `py-spy dump --pid <PID>`
-> 6. Day 14 (~2026-05-25) B3 판단 (페이퍼 카운터 5/11 재시작 기준 유지)
-> 7. **2026-05-14 사용자 요청 기록** — 설계 보완 후보는 TODO "장기 보완 백로그" 참조: S1(DB 기반 resume), S2(reconciliation), S3(live preflight), R4(전략 기대값 리포트), M1(침묵 알림 확장)
+> **다음 세션 Claude / 도울님 첫 액션**:
+> 1. **봇 재시작 결정** — 5/13 13:09 KST testnet 가짜 폭락으로 KILL_SWITCH 후 34시간 침묵 중. mode=testnet 이라 실손실 없음. SSH `sudo systemctl restart daily30k` 로 즉시 재개 가능. **단 N29 배포가 같이 가야 같은 상황 재발 시 외부 알림 동작**
+> 2. **N29 배포 절차**: `git push` → SSH 접속 → `cd ~/Daily_30k_bot && bash deploy/update.sh` → `sudo systemctl daemon-reload` (`.service` 수정 반영 필수) → `sudo systemctl restart daily30k` → `sudo systemctl status daily30k --no-pager`
+> 3. 봇 부팅 후 `journalctl -u daily30k -f` 로 다음 4줄 확인:
+>    - `[init_db] backend=supabase`
+>    - `[Telegram] 허가 chat_id=<int>`
+>    - `[INFO]` 이외(WARNING/CRITICAL) 이벤트 발생 시 새 `[severity] EVENT_TYPE: message ctx={...}` 형식으로 journal 출력 확인
+>    - 부팅 텔레그램 `[MODE=TESTNET]` 도달
+> 4. **N29-A 동작 검증** (선택): 한 번 `sudo systemctl stop daily30k` 후 텔레그램에 `🔴 daily30k 봇 종료 감지 ...` 도착 확인 → `start` 로 재가동
+> 5. **장기 관찰** — `equity_snapshots` 30분 주기, `SUPERVISOR_RESTART is_watchdog=true` / `N25_TRADE_IDLE` 발생 여부, KILL_SWITCH 재발 시 journal 에 사건 라인 + 텔레그램 알림 모두 도달 확인
+> 6. **정책 결정 보류** — testnet 가격 피드 -9% 괴리는 외부 환경 이슈. mainnet paper 모드로 전환 검토 필요 (도울님 의사결정)
+> 7. Day 14 (~2026-05-25) B3 판단 (페이퍼 카운터 5/11 재시작 기준 유지)
 
 <!--
 작업 중일 때 아래 형식으로 채워넣을 것:
@@ -70,6 +74,7 @@ python main.py
 
 | 날짜 | 파일 | 변경 이유 |
 |------|------|-----------|
+| 2026-05-15 | [executor.py](executor.py), [deploy/notify_death.sh](deploy/notify_death.sh), [deploy/daily30k.service](deploy/daily30k.service), [test.py](test.py) | **N29 KILL_SWITCH 가시성·사망 알림 패치** — 5/13 13:09 KST testnet 가짜 폭락(mainnet $81,168 vs testnet $73,706, -9% 괴리)으로 손절매·KILL_SWITCH 연쇄 발동 → 봇 정상 종료(exit 0) → systemd `Restart=on-failure` 정책상 재시작 안 함 → 34시간 침묵 (도울님 5/14 23:36 /status 무응답으로 발견). Supabase 직접 진단(`/tmp/diagnose_kill_switch.py`): mode=testnet 확정, 손절 trade 1건 mainnet 차트와 -9% 차이로 testnet 호가창 이상 신호 확정. **N29-B (가시성)**: `_log_event()` 가 텔레그램+Supabase 만 호출하고 stdout 미출력 → KILL_SWITCH 시 journal 에 종료 라인만 4건, 사건 메시지 0건. 패치: `executor._log_event()` 가 severity ∈ {CRITICAL, ERROR, WARN, WARNING} 시 `print(f"[{severity}] {event_type}: {message}{ctx_str}", flush=True)` 동시 호출 (INFO 제외로 폭주 방지). **N29-A (사망 알림)**: 봇 사망 자체 외부 알림 부재 → 텔레그램 핸들러도 함께 죽어 봇 내부 알림 불가. 패치: `deploy/notify_death.sh` 신규 — `.env` 에서 TELEGRAM_TOKEN/CHAT_ID 추출 후 curl 텔레그램 sendMessage 호출, 알림 실패도 exit 0 (systemd 재시작 정책 보호). `daily30k.service` 에 `ExecStopPost=/home/ubuntu/Daily_30k_bot/deploy/notify_death.sh` 추가 — 정상 종료·실패·OOM 모두 캐치. `Restart=on-failure` 유지(손실 한도는 명시적 종료가 정답 원칙). 회귀 테스트 2건(`test_n29b_log_event_critical_emits_stdout` — CRITICAL/WARN 출력 + INFO 침묵 + context payload 포함 검증 / `test_n29a_notify_death_script_valid` — 파일 존재·실행권한·TELEGRAM_TOKEN/CHAT_ID/api.telegram.org/exit 0 패턴 + `ExecStopPost` 와 `notify_death.sh` 연결 정적 검증). 전체 단위 테스트 통과. **배포 절차**: `git push` → SSH → `bash deploy/update.sh` → `sudo systemctl daemon-reload` (.service 수정 반영 필수) → `sudo systemctl restart daily30k` |
 | 2026-05-14 | [TODO.md](TODO.md), [WORKFLOW.md](WORKFLOW.md) | **장기 보완 백로그 기록** — 도울님 요청 "보완할 점들 나중에 반영하여 고칠 수 있도록 기록" 반영. TODO 에 2026-05-14 장기 보완 백로그 추가: S1(DB 기반 포지션·주문 resume 모드), S2(거래소 reconciliation 루프), S3(live 전환 preflight 자동화), R4(전략 기대값·리스크 리포트 강화), M1(침묵 알림 확장). C 트랙 백테스트 항목에도 수수료·슬리피지·지정가 미체결·급락장·코인 스위칭 비용 포함 조건 명시. 코드 변경 없음 |
 | 2026-05-13 | [shared_state.py](shared_state.py), [main.py](main.py), [executor.py](executor.py), [test.py](test.py) | **N25 engine idle 재발 감시 체계 보강** — 5/5 73시간 정지 + 5/9 14시간+ 재발의 공통 신호였던 `equity_snapshot` 침묵을 watchdog 대상화. `BotState` 에 `executor_last_snapshot_at` / `executor_last_trade_at` / `n25_last_trade_idle_alert_at` 추가. `snapshot_equity()` 성공 시 snapshot progress 갱신, `_log_trade(..., state=...)` 성공 시 trade progress 갱신. `main._supervise()` 에 heartbeat 와 별도 `progress_timeout` / `progress_attr` 추가 — executor heartbeat 가 살아있어도 `executor_last_snapshot_at` 이 45분 이상 무갱신이면 task cancel → `TimeoutError` → 기존 `SUPERVISOR_RESTART` 경로로 재시작(`is_watchdog=true`). 활성 엔진 상태에서 24시간 무거래 시 `N25_TRADE_IDLE` WARNING 이벤트/텔레그램 경고(alert-only, 정상 저변동장 강제 청산 방지). 회귀 테스트 2건 추가(`test_n25_supervise_restarts_when_snapshot_stale`, `test_n25_snapshot_and_trade_mark_progress`). **배포 대기**: `bash deploy/update.sh` |
 | 2026-05-13 | [executor.py](executor.py), [main.py](main.py), [config.py](config.py), [test.py](test.py) | **Codex 적대적 리뷰 결함 4건(F1·F2·F3·F4) 패치** — `/codex:adversarial-review` 가 needs-attention 평가로 실거래 자동매매 4결함 적발. **F1(CRITICAL)** 긴급 청산이 열린 sell 주문에 잠긴 잔고로 거절될 수 있음 — `executor.py` 5곳 청산 경로(check_stop_loss·emergency_sell 호출지점 5곳)를 새 헬퍼 `_safe_liquidate(reason)` 으로 통합: `cancel_all()` 선행 → 0.5초 대기 → `fetch_balance` 로 free 재동기화 → `amount_to_precision` 보정 후 시장가 매도 → 실패 시 상태 유지 + `LIQUIDATE_FAILED` CRITICAL 이벤트 + 텔레그램 알림 → 다음 루프에서 재시도. `regrid()` 도 동일 결함이라 같이 수정. **F2(HIGH)** `monitor_orders` 가 open_orders 누락을 무조건 체결로 간주 — 새 헬퍼 `_resolve_missing_order(side)` 에서 `fetch_order` 로 status/filled/average 재확인 후 분기: closed+filled>0 정상 체결, canceled+filled>0 부분만 반영, canceled+filled=0 PnL 무변경 + `ORDER_CANCELED` INFO, pending/open 은 보류. `_handle_buy_fill`/`_handle_sell_fill` 에 `actual_avg_price`·`actual_fill_qty` 옵셔널 인자 추가(기존 호출자 호환). **F3(HIGH)** `_limit_buy_with_retry` 가 타임아웃 시 부분 체결분 미반환 — cancel 직후 `fetch_order` 추가 호출, `filled > 0` 이면 `(avg, filled)` 반환·재시도 중단으로 그리드 미배치 또는 의도 초과 매수 차단. **F4(HIGH)** 텔레그램 명령 권한 검증 부재 — `config.py` 에 `TELEGRAM_CHAT_ID_INT` (int 변환) 추가, `main.py` 의 3개 CommandHandler 에 `filters.Chat(chat_id=TELEGRAM_CHAT_ID_INT)` 적용. 미설정 시 봇이 부팅 텔레그램에 CRITICAL 알림 후 `kill_event` 대기로 안전 멈춤. 부팅 시 `[Telegram] 허가 chat_id=...` 메시지 추가. 회귀 테스트 7건(F1×2 + F2×2 + F3×2 + F4×1) + MockExchange 서브클래스 3종(호출 순서 로그·잠긴 잔고 InsufficientBalance·부분 체결 응답 주입). 기존 `MockExchange.create_order` 가 미체결 주문도 `filled=amount` 로 채우던 결함도 정정(`filled=0`·`average=None`) → `test_b1_external_cancel_not_counted_as_fill` 회귀 안전. 전체 단위 테스트 통과 (Phase 3/4 + bugfix + Phase 6/7 + Codex 4건). 플랜: `~/.claude/plans/enumerated-beaming-galaxy.md`. **배포 대기**: `bash deploy/update.sh` |

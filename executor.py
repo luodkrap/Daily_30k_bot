@@ -54,7 +54,15 @@ async def _log_trade(symbol: str, side: str, qty: float, price: float,
 
 async def _log_event(event_type: str, severity: str, message: str,
                      context: dict | None = None) -> None:
-    """봇 이벤트 1건을 DB 에 비동기 기록. persistence 가 실패 격리를 내장 (N2)."""
+    """봇 이벤트 1건을 DB 에 비동기 기록. persistence 가 실패 격리를 내장 (N2).
+
+    N29-B: CRITICAL/ERROR/WARN 은 stdout 에도 동시 출력 → journald 가시화.
+    5/13 KILL_SWITCH 사건에서 journal 에 KILL_SWITCH/STOP_LOSS 메시지가 단 1건도 없어
+    Supabase 만으로 진단해야 했던 결함 재발 방지. INFO 는 제외 (journal 폭주 방지).
+    """
+    if severity in ("CRITICAL", "ERROR", "WARN", "WARNING"):
+        ctx_str = f" ctx={context}" if context else ""
+        print(f"[{severity}] {event_type}: {message}{ctx_str}", flush=True)
     await persistence.record_event(
         config.MODE, event_type, severity, message, context,
     )
