@@ -9,10 +9,10 @@
 
 | 항목 | 값 |
 |------|----|
-| **현재 Phase** | **Phase 7 운영 — Codex 적대적 리뷰 4건(F1·F2·F3·F4) 패치 완료, 관찰 모드 재진입 대기 (2026-05-13 KST)**. Codex `/codex:adversarial-review` 가 needs-attention 평가로 4개 결함 적발: F1(CRITICAL) 긴급 청산이 잠긴 잔고 때문에 거절될 수 있음, F2(HIGH) `monitor_orders` 가 사라진 주문을 무조건 체결 간주, F3(HIGH) `_limit_buy_with_retry` 가 부분 체결 후 보유분 유실, F4(HIGH) 텔레그램 명령에 발신자 권한 검증 부재. **패치**: F1 `executor.py` 의 5곳(손절·일일손실·수익중단·스위칭·종료) 청산 경로를 `_safe_liquidate(reason)` 헬퍼로 통합 — `cancel_all()` 선행 → 잔고 재동기화(`fetch_balance` free) → 정밀도 보정 후 시장가 매도 → 실패 시 상태 유지 + CRITICAL 알림 (regrid 동일 결함도 동반 수정). F2 `monitor_orders` 에 `_resolve_missing_order(side)` 헬퍼 — `fetch_order` 로 status/filled/average 재확인 후 분기 (closed+filled>0 / canceled+filled>0 부분반영 / canceled+filled=0 PnL변경없음 / pending 보류). `_handle_buy_fill`·`_handle_sell_fill` 시그니처에 `actual_avg_price`·`actual_fill_qty` 옵셔널 인자 추가(호환 유지). F3 타임아웃 cancel 직후 `fetch_order` 재조회 → filled>0 이면 `(avg, filled)` 반환·재시도 중단. F4 `config.py` `TELEGRAM_CHAT_ID_INT` (int 변환) 추가 + `main.py` 의 3개 CommandHandler 에 `filters.Chat(chat_id=...)` 적용 + 미설정 시 봇 자체가 안전 멈춤. 회귀 테스트 7건 + MockExchange 서브클래스 3종(`MockExchangeOrderLog` 호출 순서 검증, `MockExchangeWithLockedBalance` 잠긴 잔고 + InsufficientBalance, `MockExchangePartialFill` 부분 체결 응답 주입). MockExchange 본체도 미체결 시 `filled=0`/`average=None` 으로 실제 거래소 동작과 일치하도록 수정. 전체 단위 테스트 통과 (Phase 3/4 + bugfix + Phase 6/7 + Codex 4건). **다음 검증 포인트**: (1) `bash deploy/update.sh` 배포 후 `[Telegram] 허가 chat_id=...` 부팅 메시지 + 텔레그램 권한 외 chat 에서 `/stop` 무응답, (2) 다음 DAILY_STOP·손절·스위칭 발생 시 `[청산] ... 수량 ... 손익` 형식 + Supabase `bot_events` 에 `LIQUIDATE_FAILED` 0건(성공) 또는 CRITICAL 1건(실패 시 재시도 경로). 이전 패치 N27+N28(5/11 commit `fafdf5b`/`df68d45`)도 정상 동작 유지. **N25 (engine idle) 미해결** — 24시간 매매 0건 또는 equity_snapshot 30분 끊김 발견 시 즉시 py-spy 진단 필수. |
-| **마지막 점검** | 2026-05-13 KST (Codex 적대적 리뷰 4건 패치 완료, 배포 대기) |
+| **현재 Phase** | **Phase 7 운영 — N25 engine idle 재발 감시 체계 보강 완료, 배포 대기 + 장기 보완 백로그 기록 완료 (2026-05-14 KST)**. 기존 N19 heartbeat watchdog 에 더해 `main._supervise()` 가 `progress_timeout`/`progress_attr` 를 감시하도록 확장 — executor heartbeat 가 살아있어도 `executor_last_snapshot_at` 이 45분 이상 무갱신이면 task cancel → `TimeoutError` → 기존 `SUPERVISOR_RESTART` 경로로 재시작. `BotState` 에 `executor_last_snapshot_at` / `executor_last_trade_at` / `n25_last_trade_idle_alert_at` 추가, `snapshot_equity()` 성공 시 snapshot progress 갱신, `_log_trade(..., state=...)` 성공 시 trade progress 갱신. 활성 엔진 상태에서 24시간 무거래 시 `N25_TRADE_IDLE` WARNING 이벤트/텔레그램 경고(alert-only). 5/14 사용자 요청으로 S1(DB resume)·S2(reconciliation)·S3(live preflight)·R4(전략 리포트)·M1(침묵 알림 확장)을 TODO 장기 보완 백로그에 기록. **다음 검증 포인트**: `bash deploy/update.sh` 배포 후 `[init_db] backend=supabase` + `[Telegram] 허가 chat_id=...` 확인, Supabase `bot_events` 에 `SUPERVISOR_RESTART` payload `is_watchdog=true` / `N25_TRADE_IDLE` 발생 여부 관찰, snapshot 이 정상 30분 주기로 계속 적재되는지 확인. 실제 재발 시 여전히 `py-spy dump --pid <PID>` 로 갇힌 await 위치 확보. |
+| **마지막 점검** | 2026-05-14 KST (장기 보완 백로그 기록 완료, N25 패치 배포 대기 유지) |
 | **점검 누적** | 5/5 |
-| **남은 블로커** | 없음 (N27+N28 패치 배포 완료) — 단 N25(engine idle) 미해결로 다음 발동 시 재발 가능. 재발 시 즉시 `py-spy dump --pid <PID>` 로 stack trace 확보 필수 |
+| **남은 블로커** | 없음 — 단 N25 원인 await 자체는 실제 재발 stack trace 확보 전까지 미확정. 새 watchdog 이 snapshot 침묵을 재시작으로 전환하며, 재발 시 `py-spy dump --pid <PID>` 로 stack trace 확보 필수 |
 | **테스트 상태** | 전체 통과 (`python test.py` 기본 실행으로 Phase 3/4 + bugfix + Phase 6/7 전부 커버) |
 | **로드맵 플랜** | `~/.claude/plans/streamed-launching-cascade.md` (2026-04-22 승인 — 역할 분담·타임라인) |
 
@@ -38,15 +38,16 @@ python main.py
 
 ## 현재 작업
 
-> **(없음)** — Codex 적대적 리뷰 4건(F1·F2·F3·F4) 패치 작성 완료, 배포 대기 (2026-05-13).
+> **(없음)** — N25 engine idle 재발 감시 체계 보강 완료 + 장기 보완 백로그 기록 완료, 배포 대기 (2026-05-14).
 >
 > **다음 세션 Claude 첫 액션**:
 > 1. `bash deploy/advise.sh` 로 배포 권장 명령 확인 후 `git push` + `bash deploy/update.sh` 실행
 > 2. 봇 부팅 후 `journalctl -u daily30k -f` 로 `[init_db] backend=supabase` + `[Telegram] 허가 chat_id=<int>` 두 줄 확인
 > 3. 텔레그램 본인 chat 에서 `/status` 정상 응답 + (가능하면) 다른 chat 에서 `/stop` 무응답 (필터 거부) 확인
 > 4. 24~48시간 관찰: 새 청산 메시지 형식 `[청산] ... | 수량 ... | 손익 ...원`, Supabase `bot_events` 의 `LIQUIDATE_FAILED` 0건 유지
-> 5. **N25 재발 감시** — 24시간 매매 0건 또는 equity_snapshot 30분 끊김 시 즉시 `py-spy dump --pid <PID>`
+> 5. **N25 재발 감시** — `equity_snapshots` 30분 주기 유지, `SUPERVISOR_RESTART` payload `is_watchdog=true` 및 `N25_TRADE_IDLE` 이벤트 여부 확인. snapshot 침묵 재발 시 새 watchdog 이 45분 내 executor 재시작해야 하며, 실제 hang 이 보이면 즉시 `py-spy dump --pid <PID>`
 > 6. Day 14 (~2026-05-25) B3 판단 (페이퍼 카운터 5/11 재시작 기준 유지)
+> 7. **2026-05-14 사용자 요청 기록** — 설계 보완 후보는 TODO "장기 보완 백로그" 참조: S1(DB 기반 resume), S2(reconciliation), S3(live preflight), R4(전략 기대값 리포트), M1(침묵 알림 확장)
 
 <!--
 작업 중일 때 아래 형식으로 채워넣을 것:
@@ -69,6 +70,8 @@ python main.py
 
 | 날짜 | 파일 | 변경 이유 |
 |------|------|-----------|
+| 2026-05-14 | [TODO.md](TODO.md), [WORKFLOW.md](WORKFLOW.md) | **장기 보완 백로그 기록** — 도울님 요청 "보완할 점들 나중에 반영하여 고칠 수 있도록 기록" 반영. TODO 에 2026-05-14 장기 보완 백로그 추가: S1(DB 기반 포지션·주문 resume 모드), S2(거래소 reconciliation 루프), S3(live 전환 preflight 자동화), R4(전략 기대값·리스크 리포트 강화), M1(침묵 알림 확장). C 트랙 백테스트 항목에도 수수료·슬리피지·지정가 미체결·급락장·코인 스위칭 비용 포함 조건 명시. 코드 변경 없음 |
+| 2026-05-13 | [shared_state.py](shared_state.py), [main.py](main.py), [executor.py](executor.py), [test.py](test.py) | **N25 engine idle 재발 감시 체계 보강** — 5/5 73시간 정지 + 5/9 14시간+ 재발의 공통 신호였던 `equity_snapshot` 침묵을 watchdog 대상화. `BotState` 에 `executor_last_snapshot_at` / `executor_last_trade_at` / `n25_last_trade_idle_alert_at` 추가. `snapshot_equity()` 성공 시 snapshot progress 갱신, `_log_trade(..., state=...)` 성공 시 trade progress 갱신. `main._supervise()` 에 heartbeat 와 별도 `progress_timeout` / `progress_attr` 추가 — executor heartbeat 가 살아있어도 `executor_last_snapshot_at` 이 45분 이상 무갱신이면 task cancel → `TimeoutError` → 기존 `SUPERVISOR_RESTART` 경로로 재시작(`is_watchdog=true`). 활성 엔진 상태에서 24시간 무거래 시 `N25_TRADE_IDLE` WARNING 이벤트/텔레그램 경고(alert-only, 정상 저변동장 강제 청산 방지). 회귀 테스트 2건 추가(`test_n25_supervise_restarts_when_snapshot_stale`, `test_n25_snapshot_and_trade_mark_progress`). **배포 대기**: `bash deploy/update.sh` |
 | 2026-05-13 | [executor.py](executor.py), [main.py](main.py), [config.py](config.py), [test.py](test.py) | **Codex 적대적 리뷰 결함 4건(F1·F2·F3·F4) 패치** — `/codex:adversarial-review` 가 needs-attention 평가로 실거래 자동매매 4결함 적발. **F1(CRITICAL)** 긴급 청산이 열린 sell 주문에 잠긴 잔고로 거절될 수 있음 — `executor.py` 5곳 청산 경로(check_stop_loss·emergency_sell 호출지점 5곳)를 새 헬퍼 `_safe_liquidate(reason)` 으로 통합: `cancel_all()` 선행 → 0.5초 대기 → `fetch_balance` 로 free 재동기화 → `amount_to_precision` 보정 후 시장가 매도 → 실패 시 상태 유지 + `LIQUIDATE_FAILED` CRITICAL 이벤트 + 텔레그램 알림 → 다음 루프에서 재시도. `regrid()` 도 동일 결함이라 같이 수정. **F2(HIGH)** `monitor_orders` 가 open_orders 누락을 무조건 체결로 간주 — 새 헬퍼 `_resolve_missing_order(side)` 에서 `fetch_order` 로 status/filled/average 재확인 후 분기: closed+filled>0 정상 체결, canceled+filled>0 부분만 반영, canceled+filled=0 PnL 무변경 + `ORDER_CANCELED` INFO, pending/open 은 보류. `_handle_buy_fill`/`_handle_sell_fill` 에 `actual_avg_price`·`actual_fill_qty` 옵셔널 인자 추가(기존 호출자 호환). **F3(HIGH)** `_limit_buy_with_retry` 가 타임아웃 시 부분 체결분 미반환 — cancel 직후 `fetch_order` 추가 호출, `filled > 0` 이면 `(avg, filled)` 반환·재시도 중단으로 그리드 미배치 또는 의도 초과 매수 차단. **F4(HIGH)** 텔레그램 명령 권한 검증 부재 — `config.py` 에 `TELEGRAM_CHAT_ID_INT` (int 변환) 추가, `main.py` 의 3개 CommandHandler 에 `filters.Chat(chat_id=TELEGRAM_CHAT_ID_INT)` 적용. 미설정 시 봇이 부팅 텔레그램에 CRITICAL 알림 후 `kill_event` 대기로 안전 멈춤. 부팅 시 `[Telegram] 허가 chat_id=...` 메시지 추가. 회귀 테스트 7건(F1×2 + F2×2 + F3×2 + F4×1) + MockExchange 서브클래스 3종(호출 순서 로그·잠긴 잔고 InsufficientBalance·부분 체결 응답 주입). 기존 `MockExchange.create_order` 가 미체결 주문도 `filled=amount` 로 채우던 결함도 정정(`filled=0`·`average=None`) → `test_b1_external_cancel_not_counted_as_fill` 회귀 안전. 전체 단위 테스트 통과 (Phase 3/4 + bugfix + Phase 6/7 + Codex 4건). 플랜: `~/.claude/plans/enumerated-beaming-galaxy.md`. **배포 대기**: `bash deploy/update.sh` |
 | 2026-05-11 | [persistence.py](persistence.py), [test.py](test.py) | **N28 Supabase silent fallback 패치** — N27 commit `fafdf5b` 배포(5/11 17:51 KST) 직후 텔레그램 `[DEGRADED] Supabase 연결 실패 → SQLite fallback` 도착. 사유 `DuplicatePreparedStatementError: prepared statement "__asyncpg_stmt_1__" already exists` (asyncpg + pgbouncer Transaction Pool 모드 알려진 충돌). 5/9 배포는 우연히 통과했으나 5/11 배포에서 노출. `[persistence.py:192-194](persistence.py#L192-L194)` `asyncpg.create_pool` 호출에 `statement_cache_size=0` 추가 — server-side prepare 우회, asyncpg 가 매 쿼리 inline parameter 송신 (봇 쿼리 빈도 초당 1회 미만이라 성능 영향 무시). 회귀 테스트 1건(`test_n28_supabase_pool_disables_statement_cache`): 정적 검증 — `SupabaseBackend.init` 소스에 `statement_cache_size=0` 존재 확인 (실제 connection 통합 테스트는 CI 의존성으로 회피). 전체 단위 테스트 통과. **배포 대기**: `bash deploy/update.sh` |
 | 2026-05-11 | [executor.py](executor.py), [test.py](test.py) | **N27 DAILY_STOP 봇 종료 결함 패치** — 5/10 20:08 KST 일일 목표 달성 → `state.kill_event.set()` + `break` → main 의 모든 _supervise 종료 → main() 정상 exit(0) → systemd `Restart=on-failure` 정책상 재시작 안 함 → 봇 영구 종료 → 5/11 자정 자동 재개 실패 → 텔레그램·Supabase 둘 다 24시간+ 침묵 (도울님 발견). N26 패치(5/9)에서 spam 방지를 위해 추가된 `kill_event.set()` 이 의도치 않게 봇 전체 종료를 유발. **자정 리셋 분기는 메인 루프 안에 있어 break 후 영원히 도달 불가** 인 게 결정타. 패치: DAILY_STOP 분기에서 `kill_event.set()` 제거 + 자정까지 sleep loop(`asyncio.wait_for(state.kill_event.wait(), timeout=30)` 으로 외부 종료 즉시 응답 + 30초마다 자정 체크) + `state.executor_heartbeat = time.time()` 갱신(watchdog 회피) + 자정 도달 시 `state.reset_daily()` + `[리셋] {today} 일일 집계 초기화 — 매매 재개` 텔레그램 + `DAILY_RESUME` 이벤트 + `engine = None` 후 `continue`. KILL_SWITCH 분기는 그대로(손실 한도는 명시적 종료가 정답). 회귀 테스트 1건(`test_n27_daily_stop_does_not_terminate_supervisor`): spy_log_event 로 DAILY_STOP 기록 직후 `state.kill_event.is_set() is False` 동적 단언 + run_executor 소스 정적 검증(`reset_daily`/`DAILY_RESUME` 존재 + `kill_event.set` 부재). 전체 단위 테스트 통과. **배포 대기**: 도울님 SSH 1차 복구 후 `git push` + `bash deploy/update.sh` |
@@ -106,20 +109,20 @@ python main.py
 
 ## 다음 작업 목록 (우선순위 순)
 
-> **2026-05-11 합의 변경** — 5/9 N26 패치 배포 후 5/10 첫 정상 DAILY_STOP 발동 → 봇 영구 종료 (N27 신규 결함). DAILY_STOP 가 `kill_event.set()` 호출하는 한 자정 자동 재개 불가능했음. **N27 패치 완료, 도울님 1차 SSH 복구 + 배포만 남음**. 페이퍼 누적 카운터 5/11 재시작 기준 또 0일부터, B3 일정 5/25+ 연기. N25(engine idle) 미해결 유지.
+> **2026-05-14 기록 갱신** — N27/N25 패치 모두 코드 작성 완료, 배포 및 24~48시간 관찰 대기. 페이퍼 누적 카운터는 5/11 재시작 기준 유지, B3 일정 5/25+ 연기. 장기 보완 후보(S1/S2/S3/R4/M1)는 TODO "장기 보완 백로그" 에 기록.
 
 ---
 
-### 🎯 현 우선순위 (SSH 복구 → N27 배포 → 자정 재개 검증 → N25 감시 → R1 → B3)
+### 🎯 현 우선순위 (N25/N27 배포 → 자정 재개·snapshot 검증 → R1 → B3)
 
 | 시점 | 액션 | 비고 |
 |------|------|------|
 | **2026-05-11 (지금 즉시)** | 👤 **SSH 1차 복구** | `ssh ubuntu@3.36.26.177 'sudo systemctl restart daily30k && journalctl -u daily30k -n 20 --no-pager'` → 텔레그램 `[MODE=TESTNET]` 부팅 메시지 재수신 확인. (N27 패치 배포 전이라도 1일 매매 가능, 다음 DAILY_STOP 까진 정상 동작) |
 | **2026-05-11 (지금)** | 👤 **N27 패치 배포** | `git push` + `bash deploy/update.sh` (Lightsail 서버) + journal 로 fast forward + PID 교체 + `[init_db] backend=supabase` + 텔레그램 부팅 메시지 확인. 페이퍼 카운터 또 0일부터 재시작 |
-| **05/11~05/18 (Day 0~7)** | 👤 **손 떼고 페이퍼 누적 + 자정 재개 검증** | 매일 `/status` 또는 Supabase `trades_kst` 누적 확인. **DAILY_STOP 발동일 자정 직후 `[리셋] ... 매매 재개` 텔레그램 + `bot_events` 테이블 `DAILY_RESUME` 도달 확인** (N27 핵심 검증). N25 재발 감시: 24시간 매매 0건 또는 equity_snapshot 30분 끊김 시 즉시 `py-spy dump --pid <PID>` |
+| **05/11~05/18 (Day 0~7)** | 👤 **손 떼고 페이퍼 누적 + 자정 재개/snapshot 검증** | 매일 `/status` 또는 Supabase `trades_kst` 누적 확인. **DAILY_STOP 발동일 자정 직후 `[리셋] ... 매매 재개` 텔레그램 + `bot_events` 테이블 `DAILY_RESUME` 도달 확인** (N27 핵심 검증). N25 감시: `equity_snapshots` 30분 주기 유지, snapshot 침묵 시 45분 내 `SUPERVISOR_RESTART is_watchdog=true` 발생 여부 확인 |
 | **05/18~05/21 (Day 7~10)** | 🤖 **R1 진행 권장** | `/status` 응답에 누적 손익 추가. `persistence.get_total_pnl(mode)` 헬퍼 + 회귀 테스트 1건 |
 | **05/21~05/24 (선택)** | 🤖 R3 (분석 대시보드) | 승률·MDD·샤프비. R1 만으로도 B3 가능하나 있으면 강력 |
-| **2026-05-25 (Day 14)** | 👤 **B3 판단** | 누적 손익 검토 → MODE=live 전환 여부 결정 → 실거래 HMAC 키 발급(IP 화이트리스트, 출금권한 OFF) → `.env` `MODE=live` 전환. N25/N26/N27 재발 안 했어야 가능 |
+| **2026-05-25 (Day 14)** | 👤 **B3 판단** | 누적 손익 검토 → MODE=live 전환 여부 결정 → 실거래 HMAC 키 발급(IP 화이트리스트, 출금권한 OFF) → `.env` `MODE=live` 전환. N25/N26/N27 재발 안 했어야 가능. 가능하면 S3 live preflight 자동화 후 전환 |
 
 > 💡 **보류 항목 (페이퍼 데이터 정확성에 영향 없음 — 새 세션에서도 그대로 보류 권장)**
 > - **N15** (Med): BUY 행 pnl 음수 기록 → 분석 시 `WHERE side='SELL'` 만 합산하면 영향 0
@@ -166,7 +169,7 @@ python main.py
 - [ ] N24 (Med): SQLite → Supabase 백필 스크립트 (`reports/backfill_sqlite.py`) — 5/4 02:43~19:26 SQLite 119건을 Supabase 로 옮겨 통합 분석. R1 분석 직전에 1회 사용
 
 **🔴 신규 결함 (5/8~5/9 사건)**
-- [ ] **N25 (High, 미해결)**: **engine idle 결함** — 5/5 16:48 KST 마지막 SELL 후 73시간 매매 정지 사건 + 5/9 00:02:37 마지막 SELL 후 14시간+ 매매·equity heartbeat 동시 정지 (재발 의심). KILL_SWITCH/DAILY_STOP 트리거 (5/9 사건) 또는 흔적 0건 (5/5 사건) 모두 메인 루프 break 안 함 확정. equity_snapshot 30분 끊김 신호가 결정타 — executor 메인 루프 line 749 30분 타이머 분기 진입 못 함. 코드 [executor.py:704-820](executor.py#L704-L820) 분기 중 어디에 갇혔는지 미확정. 재발 시 즉시 `py-spy dump --pid <PID>` 로 stack trace 확보 후 재현 테스트 작성 → 패치. 처방 후보: (a) engine.is_active=False & buy_orders=[] & sell_orders=[] 조건 시 engine=None reset 강제, (b) heartbeat 와 별도로 "마지막 거래 시각" watchdog (예: 4시간 무거래 시 강제 regrid)
+- [x] ~~**N25** (2026-05-13 완료): **engine idle 재발 감시 체계 보강** — `equity_snapshot` 30분 타이머 침묵을 supervisor progress watchdog 으로 승격. `executor_last_snapshot_at` 45분 무갱신 시 executor task cancel → `SUPERVISOR_RESTART is_watchdog=true`. 24시간 무거래 활성 엔진은 `N25_TRADE_IDLE` WARNING 이벤트/텔레그램 경고(alert-only). 실제 원인 await 는 재발 시 `py-spy dump --pid <PID>` 로 확보~~
 - [x] ~~**N26** (2026-05-09 완료): **DAILY_STOP / KILL_SWITCH spam 결함 패치** — 5/5 03:35~08:59 KST 4,679건 + 5/9 00:00:28~00:02:34 KST 3,562건 두 차례 발생. 원인: [executor.py:734-745](executor.py#L734-L745) DAILY_STOP + [executor.py:721-732](executor.py#L721-L732) KILL_SWITCH 분기에서 `engine.emergency_sell` 가 ccxt 예외 → outer `except Exception as e:` (line 805) 가 잡음 → `state.kill_event.set()` / `break` 둘 다 도달 못 함. 패치: 두 분기 모두 `kill_event.set()` 을 emergency_sell 앞으로 이동 + emergency_sell 자체를 try/except 로 감싸 swallow + `notify_error` 로 가시화. 회귀 테스트 2건 (`test_n26_daily_stop_no_spam_when_emergency_sell_raises`, `test_n26_kill_switch_no_spam_when_emergency_sell_raises`). 전체 단위 테스트 통과~~
 
 ---
@@ -181,9 +184,21 @@ python main.py
 
 ---
 
+### 🤖 Claude 트랙 (S/M/R4 — 장기 보완 백로그) `2026-05-14 사용자 요청 기록`
+
+> 목적: 지금 당장 구현하지 않더라도 live 전환 전후에 하나씩 고칠 수 있도록 설계 보완 포인트를 보존. 상세는 [TODO.md](TODO.md) "장기 보완 백로그".
+
+- [ ] S1: DB 기반 포지션·주문 상태 복구 모드 — 기존 전량정리 외 "resume" 모드 설계
+- [ ] S2: 거래소 reconciliation 루프 — 내부 GridEngine 상태 vs Binance 실제 잔고/주문/체결 대조
+- [ ] S3: live 전환 preflight 체크리스트 자동화 — 키/권한/IP/텔레그램/Supabase/test 상태 가드
+- [ ] R4: 전략 기대값·리스크 리포트 강화 — 월간 기대값, MDD, 연속 손실일, 수수료/스위칭 비용
+- [ ] M1: 침묵 알림 확장 — screener/Telegram/Supabase/status/거래 부재 통합 health monitor
+
+---
+
 ### 🤖 Claude 트랙 (C 트랙 — 백테스트 엔진) `N 트랙 Top 3 후 진행`
 
-A 와 독립. 로컬 개발 환경에서 진행. **C1 전 반드시 N3+N4 → N1 → N8 해소 (감사 권고).**
+A 와 독립. 로컬 개발 환경에서 진행. **C1 전 반드시 N3+N4 → N1 → N8 해소 (감사 권고).** 2026-05-14 보완 기록: 수수료·슬리피지·지정가 미체결·급락장·코인 스위칭 비용을 시뮬레이션에 반드시 포함.
 - [ ] C1: Exchange 인터페이스 추상화 — `exchanges/base.py`, `ccxt_exchange.py`, `backtest_exchange.py`. GridEngine 이 추상 인터페이스만 참조하도록 `executor.py` 리팩터 (ccxt 의존 지점 약 25개 — 감사 보고서 §3-4 참조)
 - [ ] C2: `backtest/data.py` — `ccxt.fetch_ohlcv` 로 과거 1분봉 다운 → parquet 저장
 - [ ] C3: `backtest/simulator.py` + `backtest/runner.py` — 시간 이동 tick 주입 + 파라미터 스윕
@@ -224,6 +239,7 @@ A 와 독립. 로컬 개발 환경에서 진행. **C1 전 반드시 N3+N4 → N1
 
 | 날짜 | ID | 내용 |
 |------|----|------|
+| 2026-05-13 | N25 | **engine idle 재발 감시 체계 보강** — 5/5 73시간 정지 + 5/9 14시간+ 재발의 공통 신호가 `equity_snapshot` 30분 타이머 침묵이었으므로 heartbeat 와 별도 progress watchdog 추가. `BotState` 에 `executor_last_snapshot_at` / `executor_last_trade_at` / `n25_last_trade_idle_alert_at` 추가. `snapshot_equity()` 성공 시 snapshot progress 갱신, `_log_trade(..., state=...)` 성공 시 trade progress 갱신. `main._supervise()` 에 `progress_timeout` / `progress_attr` 추가 — executor heartbeat 가 살아있어도 `executor_last_snapshot_at` 이 45분 이상 무갱신이면 task cancel → `TimeoutError` → 기존 `SUPERVISOR_RESTART` 경로로 재시작(`is_watchdog=true`). `run_executor()` 부팅 시 progress 초기화, 활성 엔진 상태에서 24시간 무거래면 `N25_TRADE_IDLE` WARNING 이벤트/텔레그램 경고(alert-only, 정상 저변동장 강제 청산 방지). 회귀 테스트 2건 추가(`test_n25_supervise_restarts_when_snapshot_stale`, `test_n25_snapshot_and_trade_mark_progress`). 배포 후 Supabase `equity_snapshots` 30분 주기와 `bot_events` 의 `SUPERVISOR_RESTART`/`N25_TRADE_IDLE` 관찰 필요 |
 | 2026-05-13 | B3-ADV-01 | **Codex 적대적 리뷰 결함 4건 패치 (F1·F2·F3·F4)** — `/codex:adversarial-review` 의 needs-attention 평가가 실거래 자동매매에 치명적인 결함 4건 적발. F1(CRITICAL) `check_stop_loss`/`emergency_sell` 가 시장가 매도 선행 → `cancel_all` 후행 순서라 Binance spot 의 열린 limit sell 잠긴 잔고로 시장가 매도 거절될 수 있음. 호출지점 5곳(손절·일일손실·수익중단·코인스위칭·봇종료) 모두 동일 결함. F2(HIGH) `monitor_orders` 가 `fetch_open_orders` 누락 ID 를 `fetch_order` 재확인 없이 무조건 `_handle_*_fill` 호출 → 외부 취소·expired·rejected·부분 체결 후 취소가 전부 "완전 체결" 로 처리되어 `total_qty`/`avg_price`/PnL 오염. F3(HIGH) `_limit_buy_with_retry` 가 타임아웃 시 `cancel_order` 만 호출하고 `filled` 미확인 → 부분 체결분이 (0.0, 0.0) 으로 반환되어 그리드 미배치 또는 재시도로 의도 초과 매수. F4(HIGH) `run_telegram_bot` 의 `/status`·`/stop`·`/seed` 핸들러에 `update.effective_chat.id` 검증 부재 → 봇 사용자명·토큰 노출 시 제3자가 즉시 봇 중단·SEED 변경 가능. **패치**: `_safe_liquidate(reason) -> bool` 헬퍼로 청산 5곳 통합 (`cancel_all` 선행 → 0.5초 대기 → `fetch_balance.free` 재동기화 → precision 후 시장가 매도 → 실패 시 상태 유지 + `LIQUIDATE_FAILED` CRITICAL + 텔레그램 알림 + 다음 루프 재시도, regrid 동일 결함 같이 정리). `_resolve_missing_order(side)` 헬퍼로 `fetch_order` 분기 (closed+filled>0 정상 / canceled+filled>0 부분반영 + `ORDER_PARTIAL_CANCEL` WARNING / canceled+filled=0 무변경 + `ORDER_CANCELED` INFO / pending 보류). `_handle_buy_fill`/`_handle_sell_fill` 에 `actual_avg_price`·`actual_fill_qty` 옵셔널 인자 추가 (기존 호출자 호환). `_limit_buy_with_retry` 에 cancel 직후 `fetch_order` 재조회 추가 (filled>0 이면 그 값 반환·재시도 중단). `config.TELEGRAM_CHAT_ID_INT` (int 변환, None 가드 포함) + `main.py` `filters.Chat(chat_id=TELEGRAM_CHAT_ID_INT)` 3개 CommandHandler 적용 + 미설정 시 봇 안전 멈춤. 회귀 테스트 7건: `test_codex_f1_emergency_sell_cancels_first` (호출 순서 로그 검증), `test_codex_f1_emergency_sell_uses_free_balance` (잠긴 잔고 시뮬레이션 + InsufficientBalance 예외), `test_codex_f2_open_order_missing_fetches_status` (canceled 시 PnL 무변경), `test_codex_f2_partial_fill_uses_actual_filled` (actual_fill_qty=0.3 vs info.qty=1.0 분리 검증), `test_codex_f3_limit_buy_returns_partial_fill` (cancel 직후 filled=0.6 회수), `test_codex_f3_limit_buy_full_zero_retries` (filled=0 회귀 방지), `test_codex_f4_unauthorized_chat_rejected` (`filters.Chat.chat_ids` 검증 + `TELEGRAM_CHAT_ID_INT` 변환 검증). MockExchange 서브클래스 3종(`MockExchangeOrderLog`·`MockExchangeWithLockedBalance`·`MockExchangePartialFill`) + 기존 `MockExchange.create_order` 의 미체결 `filled=amount` 오류 정정(`filled=0`·`average=None`). 전체 단위 테스트 통과. 플랜 `~/.claude/plans/enumerated-beaming-galaxy.md` |
 | 2026-05-09 | N26 | **DAILY_STOP / KILL_SWITCH spam 결함 패치** — 5/5 4,679건 + 5/9 3,562건 두 차례 발생한 4초 간격 spam 결함 처방. 원인 100% 확정: [executor.py:734-745](executor.py#L734-L745) DAILY_STOP 분기 + [executor.py:721-732](executor.py#L721-L732) KILL_SWITCH 분기가 모두 `if engine: await engine.emergency_sell(reason)` 호출 후 `state.kill_event.set()` + `break` 순서. emergency_sell ccxt 예외(401/timeout 등)가 outer `except Exception as e:` (line 805) 에 잡히면 `kill_event.set()` 와 `break` 둘 다 절대 도달 못 함 → `asyncio.sleep(1)` → 다음 iteration → should_stop_profit / 손실한도 여전히 트리거 → 무한 spam (4초 = 1초 sleep + emergency_sell ccxt timeout 약 3초). 결함 코드는 set/break 가 emergency_sell **이후** 줄에 있어 emergency_sell 가 무사 통과해야만 작동. 5/9 사건의 경우 5/8 19:21 이후 equity_snapshot 끊겨 엔진/시장상태 stale 인 채로 자정 reset_daily → 매매 → daily_pnl 16,611원 (DAILY_MIN_PROFIT 충족) + is_market_healthy=False → should_stop_profit=True → emergency_sell 실패 → spam. 패치: 두 분기 모두 (1) `state.kill_event.set()` 을 emergency_sell **보다 먼저** 호출하여 set 자체는 무조건 보장, (2) emergency_sell 호출을 `try/except Exception as _emsell_err: await notify_error("Executor.emergency_sell on KILL_SWITCH/DAILY_STOP", _emsell_err)` 로 감싸 예외 swallow + 가시화, (3) break 가 try/except 밖에서 무조건 실행되도록 ordering. 회귀 테스트 2건 (`_N26FailingEngineBase` 공통 모의 엔진 + `_n26_install_mocks` 공통 셋업 헬퍼 도입): `test_n26_daily_stop_no_spam_when_emergency_sell_raises` 는 setup_grid 시 `daily_pnl=DAILY_TARGET+100` 강제 설정 → iter 2 line 735 트리거, `test_n26_kill_switch_no_spam_when_emergency_sell_raises` 는 `-DAILY_LOSS_LIMIT-100` 강제 설정 → iter 2 line 721 트리거. 5초 force_stop 안전망 + 결함이면 spam N건/패치 후 1건 검증. 전체 단위 테스트 통과 |
 | 2026-05-04 | N22 | **init_db 결과 journal 가시화** — 5/4 02:43 KST Supabase 일시 끊김 → SQLite fallback 발동했으나 [DEGRADED] 텔레그램 알림이 일시 NetworkError 로 누락 → 16시간 후에야 도울님 "DB에 데이터 잘 쌓이고 있어?" 질문으로 발견된 사건 처방. 데이터 손실 0건 (5/4 02:43~19:26 분 119건은 서버 SQLite 에 안전, 19:26 사용자 재시작 후 Supabase 정상 적재). 진단 시 결정타였던 정보: (1) `lsof -p $PID | grep trades.db` 의 fd 15u → SqliteBackend 사용 확정, (2) `lsof | grep "->.*:6543"` 의 ESTABLISHED → Supabase Pooler 정상 연결 확정, (3) `journalctl --since` UTC 표기 vs Supabase view KST 표기 시간대 혼동이 조기 hang 오진의 원인이었음. 처방: [main.py](main.py) `import sys` + `init_db()` 결과 후 `print(f"[init_db] backend={backend_used}", flush=True)` + fallback 시 `print(f"[init_db] FALLBACK reason={reason}", file=sys.stderr, flush=True)`. 텔레그램은 외부 의존 (네트워크/dedup) 으로 신뢰성 한계, journal 은 systemd 보장 + N12 패치로 이미 timestamp/auto-rotate 확보. 회귀 테스트 1건 (`test_n22_init_db_result_visible_in_journal`: 정적 검사 — print 패턴 + sys import + stderr 분리 검증). 전체 테스트 통과 |

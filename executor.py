@@ -35,14 +35,21 @@ import persistence
 # binance create_order rate limit: 50 orders / 10s. recover_state 가 다중 자산
 # (특히 testnet 사전 잔고) 정리 시 429 폭주를 막기 위한 매도 간 throttle.
 RECOVER_SELL_THROTTLE_SEC = 0.3
+EQUITY_SNAPSHOT_INTERVAL_SEC = 1800.0
+N25_TRADE_IDLE_ALERT_SEC = 24 * 60 * 60
+N25_TRADE_IDLE_ALERT_COOLDOWN_SEC = 6 * 60 * 60
 
 
 async def _log_trade(symbol: str, side: str, qty: float, price: float,
-                     fee: float, pnl: float) -> None:
+                     fee: float, pnl: float,
+                     state: BotState | None = None) -> None:
     """체결 1건을 DB 에 비동기 기록. persistence 가 실패 격리를 내장 (N2)."""
     await persistence.record_trade(
         symbol, side, qty, price, fee, pnl, config.MODE,
     )
+    if state is not None:
+        now = time.time()
+        state.executor_last_trade_at = now
 
 
 async def _log_event(event_type: str, severity: str, message: str,
@@ -88,8 +95,42 @@ async def snapshot_equity(exchange, state: BotState) -> None:
             position_value_usdt=position_value,
             realized_pnl=realized_usdt, unrealized_pnl=0.0,
         )
+        now = time.time()
+        state.executor_last_snapshot_at = now
     except Exception as e:
         await notify_error("persistence.equity_snapshot", e)
+
+
+async def _check_n25_trade_idle(state: BotState, engine: "GridEngine | None",
+                                now: float) -> None:
+    """24시간 무거래 침묵을 별도 경고로 남긴다.
+
+    거래 부재만으로 포지션을 강제 청산하면 정상 저변동장에서도 비용이 발생할 수 있어,
+    N25 감시는 alert-only 로 둔다. executor snapshot stale 은 main._supervise 의
+    progress watchdog 이 재시작으로 처리한다.
+    """
+    if engine is None or not engine.is_active:
+        return
+    last_trade = state.executor_last_trade_at or now
+    idle = now - last_trade
+    if idle < N25_TRADE_IDLE_ALERT_SEC:
+        return
+    last_alert = state.n25_last_trade_idle_alert_at or 0.0
+    if now - last_alert < N25_TRADE_IDLE_ALERT_COOLDOWN_SEC:
+        return
+
+    state.n25_last_trade_idle_alert_at = now
+    message = (
+        f"N25 무거래 침묵 감지 — {engine.symbol} 활성 엔진 상태에서 "
+        f"{idle / 3600:.1f}시간 체결 없음"
+    )
+    await send(f"[WARNING] {message}\n/status, Supabase, journal 확인 필요.")
+    await _log_event(
+        "N25_TRADE_IDLE", "WARNING", message,
+        {"symbol": engine.symbol, "idle_sec": idle,
+         "buy_orders": len(engine.buy_orders),
+         "sell_orders": len(engine.sell_orders)},
+    )
 
 
 async def _retry_api(fn, *args, max_retries=3, timeout=60.0, **kwargs):
@@ -180,7 +221,7 @@ class GridEngine:
             check_loss_streak(self.state)
 
         await _log_trade(self.symbol, "SELL", qty, sell_price,
-                         sell_fee_usdt, net_krw)
+                         sell_fee_usdt, net_krw, self.state)
         return net_krw
 
     # ── 지정가 초기 매수 (미체결 시 재시도) ────────────
@@ -307,7 +348,7 @@ class GridEngine:
         buy_fee_krw = buy_fee_usdt * config.KRW_RATE
         self.state.daily_pnl -= buy_fee_krw
         await _log_trade(self.symbol, "BUY", fill_qty, fill_price,
-                         buy_fee_usdt, -buy_fee_krw)
+                         buy_fee_usdt, -buy_fee_krw, self.state)
 
         # 4. 매도 그리드 배치 (보유 물량 5등분, stepSize 반올림)
         # 마지막 레벨은 fill_qty - 기배치합계 잔량 사용 → Σsell_qty ≤ total_qty 보장
@@ -468,7 +509,7 @@ class GridEngine:
         buy_fee_krw = buy_fee_usdt * config.KRW_RATE
         self.state.daily_pnl -= buy_fee_krw
         await _log_trade(self.symbol, "BUY", qty, price,
-                         buy_fee_usdt, -buy_fee_krw)
+                         buy_fee_usdt, -buy_fee_krw, self.state)
 
         # 위에 매도 주문 (stepSize 반올림, 보유량 초과 방지 상한 적용)
         sell_price = price * (1 + GRID_SPACING)
@@ -588,7 +629,8 @@ class GridEngine:
                 )
             else:
                 # avg_price 미설정 — PnL 계산 불가 (recover_state 잔존 케이스 등)
-                await _log_trade(self.symbol, "SELL", sell_qty, fill_price, 0.0, 0.0)
+                await _log_trade(self.symbol, "SELL", sell_qty, fill_price,
+                                 0.0, 0.0, self.state)
                 await send(
                     f"[청산] {reason} — {self.symbol} @ ${fill_price:,.2f}\n"
                     f"수량: {sell_qty:.6f} (avg_price 미설정, PnL 미기록)"
@@ -800,7 +842,8 @@ async def recover_state(exchange, state: BotState | None = None) -> dict:
                 f"{currency} {sell_qty:.6f}@${fill_price:,.4f}"
             )
             # N5: 청산 거래도 trades 테이블에 기록 (수수료/손익은 산출 불가 → 0)
-            await _log_trade(symbol, "SELL", sell_qty, fill_price, 0.0, 0.0)
+            await _log_trade(symbol, "SELL", sell_qty, fill_price,
+                             0.0, 0.0, state)
             # N5b: 다중 자산 청산 시 binance 50 orders/10s 제한 회피
             await asyncio.sleep(RECOVER_SELL_THROTTLE_SEC)
         except Exception as e:
@@ -868,6 +911,11 @@ async def run_executor(state: BotState, exchange) -> None:
     today: datetime.date = datetime.date.today()
 
     print("[Executor] 시작")
+    now = time.time()
+    state.executor_heartbeat = now
+    state.executor_last_snapshot_at = now
+    if not state.executor_last_trade_at:
+        state.executor_last_trade_at = now
 
     await _log_event("EXECUTOR_START", "INFO",
                      f"executor 시작 MODE={config.MODE}")
@@ -942,6 +990,10 @@ async def run_executor(state: BotState, exchange) -> None:
                     engine = None
                 while not state.kill_event.is_set():
                     state.executor_heartbeat = time.time()
+                    # N25 progress watchdog 예외: DAILY_STOP 은 자정까지 의도적으로
+                    # 매매/snapshot 을 멈추는 상태다. 이 대기를 snapshot 침묵으로
+                    # 오인해 executor 를 45분마다 재시작하지 않도록 progress 도 갱신.
+                    state.executor_last_snapshot_at = state.executor_heartbeat
                     if datetime.date.today() != today:
                         today = datetime.date.today()
                         state.reset_daily()
@@ -961,7 +1013,7 @@ async def run_executor(state: BotState, exchange) -> None:
 
             # ── 4. 200MA 체크 + 환율 갱신 + equity snapshot (30분마다) ──
             now = time.time()
-            if now - last_ma_check > 1800:
+            if now - last_ma_check > EQUITY_SNAPSHOT_INTERVAL_SEC:
                 await update_market_filter(state, exchange)
                 await update_krw_rate()
                 await snapshot_equity(exchange, state)
@@ -1005,6 +1057,7 @@ async def run_executor(state: BotState, exchange) -> None:
 
             # ── 10. 주문 체결 감지 ──
             await engine.monitor_orders()
+            await _check_n25_trade_idle(state, engine, time.time())
 
             # ── 11. 리그리딩 체크 ──
             # buy_orders 미체결 잔존 시 regrid 실행하면 이중 포지션 위험 → 모든 주문 비어있을 때만

@@ -1864,6 +1864,108 @@ def test_n19_supervise_normal_executor_no_false_trigger():
     print("  [PASS] n19_supervise_normal_no_false_trigger: 정상 종료 + 0건 재시작")
 
 
+def test_n25_supervise_restarts_when_snapshot_stale():
+    """N25: heartbeat 가 갱신돼도 equity snapshot progress 가 끊기면 executor 재시작."""
+    import time
+    import main as main_mod
+    import persistence
+    from shared_state import BotState
+
+    state = BotState()
+    captured_events: list[tuple] = []
+
+    orig_record = persistence.record_event
+    orig_notify = main_mod.notify_error
+    orig_send = main_mod.send
+
+    async def fake_record(mode, event_type, severity, message, payload=None):
+        captured_events.append((event_type, severity, message, payload))
+
+    async def noop(*a, **kw):
+        pass
+
+    persistence.record_event = fake_record
+    main_mod.notify_error = noop
+    main_mod.send = noop
+
+    invocation = [0]
+
+    async def coro():
+        invocation[0] += 1
+        if invocation[0] >= 2:
+            return
+        while True:
+            state.executor_heartbeat = time.time()
+            await asyncio.sleep(0.05)
+
+    try:
+        asyncio.run(main_mod._supervise(
+            "executor", coro, state,
+            max_restarts=3,
+            watchdog_timeout=0.5,
+            heartbeat_attr="executor_heartbeat",
+            progress_timeout=0.25,
+            progress_attr="executor_last_snapshot_at",
+        ))
+    finally:
+        persistence.record_event = orig_record
+        main_mod.notify_error = orig_notify
+        main_mod.send = orig_send
+
+    restart_events = [e for e in captured_events if e[0] == "SUPERVISOR_RESTART"]
+    assert len(restart_events) == 1, f"progress 재시작 1건이어야: {captured_events}"
+    payload = restart_events[0][3] or {}
+    assert payload.get("is_watchdog") is True, f"is_watchdog payload 누락: {payload}"
+    assert "progress watchdog" in payload.get("error", ""), (
+        f"progress watchdog 메시지 누락: {restart_events[0]}"
+    )
+    assert invocation[0] == 2, f"재시작 후 두 번째 시도 필요: {invocation[0]}"
+    print("  [PASS] n25_supervise_snapshot_stale: heartbeat 정상 + snapshot 침묵 재시작")
+
+
+def test_n25_snapshot_and_trade_mark_progress():
+    """N25: snapshot/trade 성공 시 BotState 의 진행 시각이 갱신된다."""
+    import persistence
+    from executor import snapshot_equity, _log_trade
+    from shared_state import BotState
+
+    state = BotState()
+    ex = MockExchange(ticker_price=100.0, usdt_balance=1234.0)
+    captured: list[tuple] = []
+
+    orig_snapshot = persistence.record_equity_snapshot
+    orig_trade = persistence.record_trade
+
+    async def fake_snapshot(**kw):
+        captured.append(("snapshot", kw))
+
+    async def fake_trade(*a, **kw):
+        captured.append(("trade", a, kw))
+
+    persistence.record_equity_snapshot = fake_snapshot
+    persistence.record_trade = fake_trade
+
+    try:
+        before_snapshot = state.executor_last_snapshot_at
+        asyncio.run(snapshot_equity(ex, state))
+        before_trade = state.executor_last_trade_at
+        asyncio.run(_log_trade("BTC/USDT", "BUY", 0.1, 100.0, 0.01, -10.0, state))
+    finally:
+        persistence.record_equity_snapshot = orig_snapshot
+        persistence.record_trade = orig_trade
+
+    assert state.executor_last_snapshot_at > before_snapshot, (
+        "snapshot 성공 후 executor_last_snapshot_at 미갱신"
+    )
+    assert state.executor_last_trade_at > before_trade, (
+        "trade 기록 후 executor_last_trade_at 미갱신"
+    )
+    assert [row[0] for row in captured] == ["snapshot", "trade"], (
+        f"예상 기록 순서 불일치: {captured}"
+    )
+    print("  [PASS] n25_progress_markers: snapshot/trade 진행 시각 갱신")
+
+
 def test_n20_retry_api_times_out_on_hung_call():
     """N20: _retry_api 가 hung await 을 timeout 으로 끊고 max_retries 만큼 시도 후 raise.
 
@@ -2224,6 +2326,10 @@ async def _test_n27_async():
     )
     assert "DAILY_RESUME" in ds_src, (
         "N27: DAILY_STOP 분기에 DAILY_RESUME 이벤트 없음 — 재개 가시성 누락."
+    )
+    assert "executor_last_snapshot_at" in ds_src, (
+        "N25: DAILY_STOP 의도적 대기 중 snapshot progress 갱신 없음 — "
+        "progress watchdog 가 45분마다 executor 를 재시작할 수 있음."
     )
     assert "kill_event.set" not in ds_src, (
         "N27: DAILY_STOP 분기에 kill_event.set() 호출 — 봇 종료 결함 재발."
@@ -2747,9 +2853,11 @@ if __name__ == "__main__":
         test_n12_service_uses_journald()
         test_n19_supervise_cancels_hung_executor()
         test_n19_supervise_normal_executor_no_false_trigger()
+        test_n25_supervise_restarts_when_snapshot_stale()
+        test_n25_snapshot_and_trade_mark_progress()
         test_n20_retry_api_times_out_on_hung_call()
         test_n20_retry_api_normal_call_unaffected()
-        print("Phase 7 N12+N19+N20 안전 패치 단위 테스트 통과!")
+        print("Phase 7 N12+N19+N20+N25 안전 패치 단위 테스트 통과!")
 
         print("\n=== Phase 7: N22 init_db 결과 journal 가시화 ===")
         test_n22_init_db_result_visible_in_journal()

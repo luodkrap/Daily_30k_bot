@@ -52,6 +52,11 @@ class BotState:
     # 4/28~5/4 6일간 run_executor 단독 hang 사건(예외 없음 → 기존 _supervise 가 못 잡음)
     # 재발 방지가 목적. recover_state 내부 throttle sleep 직후에도 갱신.
     executor_heartbeat: float = 0.0
+    # N25 silence watchdog — heartbeat 가 살아있어도 운영 산출물이 끊기면 감지.
+    # equity snapshot 은 30분 주기이므로 supervisor 가 이 값을 별도 progress 로 감시한다.
+    executor_last_snapshot_at: float = 0.0
+    executor_last_trade_at: float = 0.0
+    n25_last_trade_idle_alert_at: float = 0.0
 
     def reset_daily(self) -> None:
         """자정 일일 집계 수치 초기화. run_executor에서 날짜 변경 감지 시 호출."""
