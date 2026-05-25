@@ -93,8 +93,9 @@
 | `notifier.py` | 텔레그램 비동기 알림 모듈 (`aiohttp`) |
 | `screener.py` | 스캐너 엔진 — 5단계 필터링 + 점수 정렬 + 텔레그램 보고 |
 | `executor.py` | 트레이딩 엔진 — `GridEngine` + `run_executor` 오케스트레이터 + 200MA 필터 |
-| `persistence.py` | 듀얼 백엔드 영속화 (`SqliteBackend` / `SupabaseBackend`, async 인터페이스). 테이블 3종: `trades` (체결 로그, live/testnet mode 컬럼), `equity_snapshots` (1시간 주기 잔고), `bot_events` (킬·재시작·에러) |
-| `main.py` | `asyncio.gather()`로 스캐너·트레이딩·텔레그램 봇 동시 실행 + MODE별 `set_sandbox_mode` 분기 |
+| `persistence.py` | 듀얼 백엔드 영속화 (`SqliteBackend` / `SupabaseBackend`, async 인터페이스). 테이블 3종: `trades` (체결 로그, live/testnet/paper mode 컬럼), `equity_snapshots` (1시간 주기 잔고), `bot_events` (킬·재시작·에러) |
+| `paper_exchange.py` | `MODE=paper` 전용 `PaperExchange` — mainnet 실시세를 reader 로 읽되 주문만 로컬 가상 체결 (ccxt.binance 덕 타이핑). testnet 외부 결함 회피용 검증 모드. `paper_state.json` 영속화 |
+| `main.py` | `asyncio.gather()`로 스캐너·트레이딩·텔레그램 봇 동시 실행 + MODE별 분기 (testnet=`set_sandbox_mode`, paper=`PaperExchange` 주입) |
 | `test.py` | 단위·통합 테스트 |
 
 **Phase 7 추가 예정 (2026-04-21 확정 플랜):**
@@ -152,7 +153,7 @@
 
 - **문제 상황:** 서버 재부팅, 네트워크 단절 등으로 인해 봇 프로세스가 강제 종료될 경우, 메모리에 상주하던 매매 데이터(진입가, 보유 수량, 현재 전략 단계)가 손실됨.
 - **현재 구현 (Phase 6 기준):**
-  - **SQLite** (`trades.db`): 체결 이력 영구 보관 — `persistence.py` 모듈. 스키마: `(id, ts, symbol, side, qty, price, fee, pnl, mode)`. `mode` 컬럼으로 live/testnet 거래 분리. **로그 전용** (아래 '복구 방식' 참조).
+  - **SQLite** (`trades.db`): 체결 이력 영구 보관 — `persistence.py` 모듈. 스키마: `(id, ts, symbol, side, qty, price, fee, pnl, mode)`. `mode` 컬럼으로 live/testnet/paper 거래 분리. **로그 전용** (아래 '복구 방식' 참조).
   - **재시작 시 복구 방식:** 현재는 `executor.recover_state()` 가 '전량정리' 방식으로 동작 — 미체결 주문 전부 취소 + 비-USDT/BNB/스테이블 잔고 시장가 매도. DB 로드 기반 포지션 재개는 현 단계 스코프 외.
 - **Phase 7 확장 계획 (2026-04-21 확정, A 트랙):**
   - **Supabase Postgres 듀얼 백엔드:** `persistence.py` 를 `asyncpg` 로 리팩터 + `DB_BACKEND=supabase|sqlite` 환경변수 분기. 운영은 Supabase, 로컬 개발·백테스트는 SQLite. ✅ 코드 구현 완료 (2026-04-21).

@@ -38,6 +38,9 @@ RECOVER_SELL_THROTTLE_SEC = 0.3
 EQUITY_SNAPSHOT_INTERVAL_SEC = 1800.0
 N25_TRADE_IDLE_ALERT_SEC = 24 * 60 * 60
 N25_TRADE_IDLE_ALERT_COOLDOWN_SEC = 6 * 60 * 60
+# N30: 그리드 진입(setup_grid) 실패가 이 시간 이상 지속되면 WARNING 경고.
+N30_GRID_IDLE_ALERT_SEC = 60 * 60
+N30_GRID_IDLE_ALERT_COOLDOWN_SEC = 6 * 60 * 60
 
 
 async def _log_trade(symbol: str, side: str, qty: float, price: float,
@@ -138,6 +141,38 @@ async def _check_n25_trade_idle(state: BotState, engine: "GridEngine | None",
         {"symbol": engine.symbol, "idle_sec": idle,
          "buy_orders": len(engine.buy_orders),
          "sell_orders": len(engine.sell_orders)},
+    )
+
+
+async def _note_grid_setup_idle(state: BotState, reason: str, now: float) -> None:
+    """그리드 진입(setup_grid) 실패가 지속되는 idle 을 감지·경고한다 (N30).
+
+    engine 이 None 인 채 run_executor ── 8 단계에서 매 루프 실패하는 상태는
+    N25 trade-idle(engine 활성 전제) 도, snapshot watchdog(snapshot 은 정상) 도
+    못 잡는 사각지대다. 2026-05-15 이후 testnet 초기 지정가 매수 미체결로 10일간
+    무거래였으나 어떤 경고도 없었던 사건의 처방. 진입 성공 시 호출자가
+    ``state.executor_grid_idle_since`` 를 0 으로 리셋한다. throttle 로 spam 을 막고
+    WARNING → stdout(N29)/텔레그램/Supabase 로 노출한다.
+    """
+    if state.executor_grid_idle_since <= 0:
+        state.executor_grid_idle_since = now
+    idle = now - state.executor_grid_idle_since
+    if idle < N30_GRID_IDLE_ALERT_SEC:
+        return
+    last_alert = state.n30_last_grid_idle_alert_at or 0.0
+    if now - last_alert < N30_GRID_IDLE_ALERT_COOLDOWN_SEC:
+        return
+
+    state.n30_last_grid_idle_alert_at = now
+    message = (
+        f"그리드 진입 실패 지속 — {state.target_coin or '타겟 없음'} "
+        f"{idle / 3600:.1f}시간 거래 미진입 ({reason})"
+    )
+    await send(f"[WARNING] {message}\n"
+               f"초기 매수 미체결/수수료 검증 실패 가능. journal·호가 확인 필요.")
+    await _log_event(
+        "GRID_SETUP_IDLE", "WARNING", message,
+        {"reason": reason, "idle_sec": idle, "target": state.target_coin},
     )
 
 
@@ -732,6 +767,17 @@ async def update_market_filter(state: BotState, exchange) -> None:
     try:
         ohlcv = await _retry_api(exchange.fetch_ohlcv, "BTC/USDT", "1d", limit=201)
         if len(ohlcv) < 201:
+            # N30: 일봉이 201개 미만이면 200MA 를 계산할 수 없어 필터를 적용하지 못한다.
+            # is_market_healthy 는 기본값(True)에 동결되어 매매는 계속 허용되지만,
+            # 이 무력화가 조용히 일어나면(5/15 testnet 일봉 20개) 진단을 그르친다. 1회 경고.
+            if not state.market_filter_unavailable_warned:
+                state.market_filter_unavailable_warned = True
+                await _log_event(
+                    "MARKET_FILTER_UNAVAILABLE", "WARNING",
+                    f"BTC 일봉 {len(ohlcv)}개 < 201 — 200MA 필터 미적용",
+                    {"candles": len(ohlcv),
+                     "is_market_healthy": state.is_market_healthy},
+                )
             return
         closes = [c[4] for c in ohlcv]
         ma_200 = sum(closes[:-1]) / 200
@@ -770,6 +816,14 @@ async def recover_state(exchange, state: BotState | None = None) -> dict:
 
     Returns: {"canceled": int, "liquidated": list[str], "skipped": list[str]}
     """
+    # MODE=paper: 가상 상태는 PaperExchange.load_state() 가 JSON 에서 복원하므로
+    # clean-slate 청산을 하면 직전 그리드·포지션이 시장가로 전량 정리되어 영속화가
+    # 무의미해진다. paper 는 복원된 상태를 그대로 이어가도록 recover 를 스킵한다.
+    if config.MODE == "paper":
+        await _log_event("RECOVER_STATE", "INFO",
+                         "paper 모드 — 가상 상태 JSON 복원, 청산 스킵", {})
+        return {"canceled": 0, "liquidated": [], "skipped": []}
+
     # 0. 마켓 정보 로드 (MIN_NOTIONAL·stepSize 확인용)
     try:
         if not getattr(exchange, "markets", None):
@@ -1049,13 +1103,19 @@ async def run_executor(state: BotState, exchange) -> None:
                 if not engine.validate_fees():
                     await send("[Executor] 수수료 검증 실패 — 그리드 간격 부족")
                     engine = None
+                    await _note_grid_setup_idle(
+                        state, "수수료 검증 실패", time.time())
                     await asyncio.sleep(60)
                     continue
                 await engine.setup_grid()
                 if not engine.is_active:
                     engine = None
+                    await _note_grid_setup_idle(
+                        state, "초기 매수 미체결 — 그리드 미배치", time.time())
                     await asyncio.sleep(60)
                     continue
+                # 그리드 진입 성공 → N30 idle 추적 리셋
+                state.executor_grid_idle_since = 0.0
 
             # ── 9. 손절 체크 ──
             current_price = await engine._get_current_price()

@@ -247,16 +247,24 @@ async def _supervise(
 async def main() -> None:
     state = BotState()
     state.is_running = True
-    exchange = ccxt_async.binance({
-        "apiKey": BINANCE_API_KEY,
-        "secret": BINANCE_SECRET_KEY,
-        "enableRateLimit": True,
-    })
-    if MODE == "testnet":
-        exchange.set_sandbox_mode(True)
-        # sandbox 적용 실패 시 실거래로 주문 나가는 참사 방지
-        assert "testnet" in exchange.urls["api"]["public"], \
-            "set_sandbox_mode 적용 실패 — testnet URL 미전환"
+    if MODE == "paper":
+        # paper: mainnet 실시세를 읽는 reader 를 PaperExchange 로 감싸 주문만 가상 체결.
+        # executor/screener 는 거래소 객체 교체만으로 무수정 동작 (덕 타이핑).
+        from paper_exchange import PaperExchange
+        reader = ccxt_async.binance({"enableRateLimit": True})
+        exchange = PaperExchange(reader)
+        exchange.load_state()
+    else:
+        exchange = ccxt_async.binance({
+            "apiKey": BINANCE_API_KEY,
+            "secret": BINANCE_SECRET_KEY,
+            "enableRateLimit": True,
+        })
+        if MODE == "testnet":
+            exchange.set_sandbox_mode(True)
+            # sandbox 적용 실패 시 실거래로 주문 나가는 참사 방지
+            assert "testnet" in exchange.urls["api"]["public"], \
+                "set_sandbox_mode 적용 실패 — testnet URL 미전환"
     state.exchange = exchange
 
     try:

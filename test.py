@@ -1215,17 +1215,17 @@ def test_mode_branch_testnet():
 
 
 def test_mode_branch_invalid():
-    """MODE 값이 live/testnet 외면 부팅 시 즉시 실패해야 한다."""
+    """MODE 값이 live/testnet/paper 외면 부팅 시 즉시 실패해야 한다."""
     import importlib
     import sys
-    with _patched_env({"MODE": "paper"}):
+    with _patched_env({"MODE": "demo"}):
         sys.modules.pop("config", None)
         try:
             importlib.import_module("config")
         except AssertionError:
             print("  [PASS] mode_branch_invalid: 잘못된 MODE 거부")
             return
-    raise AssertionError("MODE=paper 허용됨 (AssertionError 기대)")
+    raise AssertionError("MODE=demo 허용됨 (AssertionError 기대)")
 
 
 def _patched_env(overrides: dict):
@@ -2451,6 +2451,270 @@ def test_n29a_notify_death_script_valid():
     print("  [PASS] n29a_notify_death_script_valid: 사망 알림 훅 정적 검증 통과")
 
 
+def test_n30_grid_setup_idle_alerts_after_threshold():
+    """N30 (2026-05-15 사건): setup_grid 초기 매수 미체결로 engine=None 반복 시
+    10일간 무거래였으나 어떤 경고도 없었다. N25 trade-idle 은 engine 활성 전제라
+    이 상태를 못 잡는다. _note_grid_setup_idle 이 임계 경과 후 WARNING 을 내고,
+    임계 전에는 침묵하며, 진입 성공 시 idle 추적이 리셋되는지 검증."""
+    import persistence
+    import executor
+    from executor import _note_grid_setup_idle
+    from shared_state import BotState
+
+    captured: list[tuple] = []
+    orig = persistence.record_event
+
+    async def fake(mode, event_type, severity, message, context=None, ts=None):
+        captured.append((event_type, severity))
+
+    persistence.record_event = fake
+    try:
+        state = BotState()
+        state.target_coin = "BTC/USDT"
+        t0 = 1_000_000.0
+
+        # 1) 첫 실패 — idle 시작 기록, 임계(1h) 전이라 침묵
+        asyncio.run(_note_grid_setup_idle(state, "초기 매수 미체결", t0))
+        assert state.executor_grid_idle_since == t0, "idle 시작 시각 미기록"
+        assert not captured, f"임계 전 조기 경고 발생: {captured}"
+
+        # 2) 임계 직전(59분) — 여전히 침묵
+        asyncio.run(_note_grid_setup_idle(
+            state, "초기 매수 미체결", t0 + executor.N30_GRID_IDLE_ALERT_SEC - 60))
+        assert not captured, f"임계 직전 조기 경고: {captured}"
+
+        # 3) 임계 초과(1h+1초) — WARNING 1건
+        asyncio.run(_note_grid_setup_idle(
+            state, "초기 매수 미체결", t0 + executor.N30_GRID_IDLE_ALERT_SEC + 1))
+        assert any(et == "GRID_SETUP_IDLE" and sev == "WARNING" for et, sev in captured), (
+            f"임계 초과인데 GRID_SETUP_IDLE WARNING 미발생: {captured}"
+        )
+        n_after_first = len(captured)
+
+        # 4) 쿨다운(6h) 내 재호출 — 추가 경고 없음 (spam 방지)
+        asyncio.run(_note_grid_setup_idle(
+            state, "초기 매수 미체결", t0 + executor.N30_GRID_IDLE_ALERT_SEC + 120))
+        assert len(captured) == n_after_first, f"쿨다운 내 spam 발생: {captured}"
+
+        # 5) 진입 성공 시 호출자가 리셋 → 다음 idle 은 새 사이클로 재시작
+        state.executor_grid_idle_since = 0.0
+        asyncio.run(_note_grid_setup_idle(state, "초기 매수 미체결", t0 + 999_999))
+        assert state.executor_grid_idle_since == t0 + 999_999, (
+            "리셋 후 idle 시작 시각이 새로 기록되지 않음"
+        )
+    finally:
+        persistence.record_event = orig
+
+    print("  [PASS] n30_grid_setup_idle: 임계 경과 경고 + 침묵 + 쿨다운 + 리셋")
+
+
+def test_n30_market_filter_unavailable_warns_once():
+    """N30: BTC 일봉 < 201 이면 200MA 필터를 계산할 수 없어 update_market_filter 가
+    조용히 return → is_market_healthy 가 기본값(True)에 동결된다 (5/15 testnet 일봉 20개).
+    동작(매매 허용)은 유지하되 MARKET_FILTER_UNAVAILABLE WARNING 을 1회만 내는지 검증."""
+    import persistence
+    from executor import update_market_filter
+    from shared_state import BotState
+
+    captured: list[tuple] = []
+    orig = persistence.record_event
+
+    async def fake(mode, event_type, severity, message, context=None, ts=None):
+        captured.append((event_type, severity))
+
+    persistence.record_event = fake
+    try:
+        state = BotState()
+        state.is_market_healthy = True
+
+        class _ShortHistory(MockExchange):
+            async def fetch_ohlcv(self, symbol, timeframe, limit=None):
+                # testnet 처럼 일봉이 20개만 존재
+                return [[i, 99, 121, 99, 100.0, 1_000_000] for i in range(20)]
+
+        ex = _ShortHistory()
+        asyncio.run(update_market_filter(state, ex))
+        asyncio.run(update_market_filter(state, ex))  # 2회차 — 추가 경고 없어야
+
+    finally:
+        persistence.record_event = orig
+
+    warns = [et for et, sev in captured
+             if et == "MARKET_FILTER_UNAVAILABLE" and sev == "WARNING"]
+    assert len(warns) == 1, (
+        f"일봉 부족 경고가 정확히 1회가 아님(spam/누락): {captured}"
+    )
+    assert state.is_market_healthy is True, (
+        "필터 미적용 시 동작 유지(매매 허용)되어야 — is_market_healthy 변형됨"
+    )
+    assert state.market_filter_unavailable_warned is True, "1회 경고 플래그 미설정"
+    print("  [PASS] n30_market_filter_unavailable: 일봉 부족 1회 경고 + 동작 유지")
+
+
+class _PaperReader:
+    """PaperExchange 용 경량 mainnet reader 모의 (가격 동적 변경 가능)."""
+
+    def __init__(self, price=100.0):
+        self.price = price
+        self.markets = {}
+
+    async def fetch_ticker(self, symbol):
+        return {"last": self.price}
+
+    async def fetch_ohlcv(self, symbol, timeframe, limit=None):
+        n = limit or 201
+        return [[i, self.price, self.price, self.price, self.price, 1000.0]
+                for i in range(n)]
+
+    async def fetch_tickers(self, *a, **k):
+        return {}
+
+    async def load_markets(self, *a, **k):
+        return self.markets
+
+    def amount_to_precision(self, symbol, amount):
+        return float(round(float(amount), 6))
+
+    def price_to_precision(self, symbol, price):
+        return float(round(float(price), 2))
+
+    async def close(self):
+        pass
+
+
+def _paper(tmpdir, price=100.0):
+    import os
+    from paper_exchange import PaperExchange
+    return PaperExchange(_PaperReader(price), state_path=os.path.join(tmpdir, "s.json"))
+
+
+def test_paper_exchange_limit_fill():
+    """paper: 지정가 매수/매도가 현재가 도달 시 즉시 전량 체결되고 잔고가 이동한다."""
+    import tempfile
+    import config
+
+    with tempfile.TemporaryDirectory() as d:
+        px = _paper(d, price=100.0)
+        px.balance = {"USDT": 10000.0}
+
+        # 현재가(100)에 건 buy → 즉시 체결
+        o = asyncio.run(px.create_order("BTC/USDT", "limit", "buy", 1.0, 100.0))
+        assert o["status"] == "closed" and o["filled"] == 1.0, o
+        assert abs(px.balance["BTC"] - 1.0) < 1e-9, px.balance
+        fee = 100.0 * 1.0 * config.FEE_RATE
+        assert abs(px.balance["USDT"] - (10000.0 - 100.0 - fee)) < 1e-6, px.balance
+
+        # 현재가 아래(90)에 건 buy → open 유지
+        o2 = asyncio.run(px.create_order("BTC/USDT", "limit", "buy", 1.0, 90.0))
+        assert o2["status"] == "open", o2
+        assert len(asyncio.run(px.fetch_open_orders("BTC/USDT"))) == 1
+
+        # 가격 하락(90) → fetch_open_orders 진입 시 체결 판정으로 사라짐
+        px._reader.price = 90.0
+        assert len(asyncio.run(px.fetch_open_orders("BTC/USDT"))) == 0, "도달했는데 미체결"
+        assert abs(px.balance["BTC"] - 2.0) < 1e-9, px.balance
+
+        # sell 대칭: 현재가(90) 위(95)에 건 sell → open, 가격 상승 시 체결
+        os1 = asyncio.run(px.create_order("BTC/USDT", "limit", "sell", 1.0, 95.0))
+        assert os1["status"] == "open", os1
+        px._reader.price = 95.0
+        f = asyncio.run(px.fetch_order(os1["id"], "BTC/USDT"))
+        assert f["status"] == "closed" and f["filled"] == 1.0, f
+        assert abs(px.balance["BTC"] - 1.0) < 1e-9, px.balance
+    print("  [PASS] paper_limit_fill: buy/sell 즉시·지연 체결 + 잔고 이동")
+
+
+def test_paper_exchange_market_slippage():
+    """paper: 시장가는 현재가 ± PAPER_SLIPPAGE 로 즉시 체결, 수수료 USDT 차감."""
+    import tempfile
+    import config
+
+    with tempfile.TemporaryDirectory() as d:
+        px = _paper(d, price=100.0)
+        px.balance = {"USDT": 0.0, "BTC": 2.0}
+
+        o = asyncio.run(px.create_order("BTC/USDT", "market", "sell", 1.0))
+        assert o["status"] == "closed", o
+        expected_px = 100.0 * (1 - config.PAPER_SLIPPAGE)
+        assert abs(o["average"] - expected_px) < 1e-9, o
+        fee = expected_px * 1.0 * config.FEE_RATE
+        assert abs(px.balance["USDT"] - (expected_px - fee)) < 1e-6, px.balance
+        assert abs(px.balance["BTC"] - 1.0) < 1e-9, px.balance
+    print("  [PASS] paper_market_slippage: 시장가 슬리피지·수수료 반영")
+
+
+def test_paper_exchange_cancel():
+    """paper: cancel_order 는 미체결 주문을 canceled 로 마킹하고 잔고를 변경하지 않는다."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        px = _paper(d, price=100.0)
+        px.balance = {"USDT": 10000.0}
+        o = asyncio.run(px.create_order("BTC/USDT", "limit", "buy", 1.0, 90.0))  # open
+        before = dict(px.balance)
+        c = asyncio.run(px.cancel_order(o["id"], "BTC/USDT"))
+        assert c["status"] == "canceled", c
+        assert px.balance == before, "취소가 잔고를 변경함"
+        assert len(asyncio.run(px.fetch_open_orders("BTC/USDT"))) == 0
+    print("  [PASS] paper_cancel: 미체결 취소 + 잔고 불변")
+
+
+def test_paper_state_roundtrip():
+    """paper: 가상 상태(잔고·미체결·next_id)가 JSON 저장/복원으로 일치한다."""
+    import tempfile
+    import os
+    from paper_exchange import PaperExchange
+
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "s.json")
+        px = PaperExchange(_PaperReader(100.0), state_path=path)
+        px.balance = {"USDT": 5000.0}
+        asyncio.run(px.create_order("BTC/USDT", "limit", "buy", 1.0, 90.0))  # open + save
+
+        px2 = PaperExchange(_PaperReader(100.0), state_path=path)
+        px2.load_state()
+        assert abs(px2.balance["USDT"] - 5000.0) < 1e-9, px2.balance
+        open2 = [o for o in px2.open_orders.values() if o["status"] == "open"]
+        assert len(open2) == 1, px2.open_orders
+        assert px2._next_id == px._next_id, (px2._next_id, px._next_id)
+    print("  [PASS] paper_state_roundtrip: 잔고·미체결·next_id 복원 일치")
+
+
+def test_paper_engine_integration():
+    """paper: PaperExchange 를 주입한 GridEngine 이 코드 수정 없이 그리드를 배치·체결한다.
+
+    executor 무수정 원칙 검증 — 거래소 객체 교체만으로 setup_grid + monitor_orders 동작.
+    """
+    import tempfile
+    import persistence
+    from executor import GridEngine
+    from shared_state import BotState
+
+    orig_trade = persistence.record_trade
+
+    async def fake_trade(*a, **k):
+        pass
+
+    persistence.record_trade = fake_trade
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            px = _paper(d, price=100.0)
+            px.balance = {"USDT": 100000.0}
+            state = BotState()
+            eng = GridEngine("BTC/USDT", px, state)
+
+            asyncio.run(eng.setup_grid())
+            assert eng.is_active, "paper 거래소로 그리드 미배치 (initial buy 미체결?)"
+            assert eng.total_qty > 0, "초기 매수 미반영"
+            assert px.balance.get("BTC", 0.0) > 0, "가상 BTC 미보유"
+
+            # 1초 폴링 1싸이클이 예외 없이 동작 (가격 불변이라 추가 체결 없음)
+            asyncio.run(eng.monitor_orders())
+    finally:
+        persistence.record_trade = orig_trade
+    print("  [PASS] paper_engine_integration: setup_grid 가상 체결 + monitor 1싸이클")
+
+
 def test_n2_notifier_failure_also_swallowed():
     """N2: notifier 자체 장애(텔레그램 다운 등)에도 persistence 공개 함수는 예외 미전파."""
     import persistence
@@ -2975,6 +3239,19 @@ if __name__ == "__main__":
         test_n29b_log_event_critical_emits_stdout()
         test_n29a_notify_death_script_valid()
         print("Phase 7 N29 가시성·사망 알림 단위 테스트 통과!")
+
+        print("\n=== Phase 7: N30 grid-setup idle + 200MA 필터 미적용 가시화 ===")
+        test_n30_grid_setup_idle_alerts_after_threshold()
+        test_n30_market_filter_unavailable_warns_once()
+        print("Phase 7 N30 진입 실패 idle·필터 가시화 단위 테스트 통과!")
+
+        print("\n=== Phase 7: Paper 모드 (mainnet 실시세 + 로컬 가상 체결) ===")
+        test_paper_exchange_limit_fill()
+        test_paper_exchange_market_slippage()
+        test_paper_exchange_cancel()
+        test_paper_state_roundtrip()
+        test_paper_engine_integration()
+        print("Phase 7 Paper 모드 단위 테스트 통과!")
 
         print("\n=== Codex 적대적 리뷰 결함 4건 회귀 (F1·F2·F3·F4) ===")
         test_codex_f1_emergency_sell_cancels_first()
