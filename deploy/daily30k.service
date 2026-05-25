@@ -10,6 +10,10 @@ WorkingDirectory=/home/ubuntu/Daily_30k_bot
 EnvironmentFile=/home/ubuntu/Daily_30k_bot/.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/ubuntu/Daily_30k_bot/venv/bin/python main.py
+# N29-A: 봇 종료(정상/실패/OOM) 시 텔레그램 즉시 알림. 봇 프로세스가 죽어도
+# systemd 가 직접 호출하므로 외부 watchdog 없이 사망 감지 가능. 5/13 KILL_SWITCH
+# 후 34시간 침묵 사건 재발 방지. 알림 실패는 서비스 정책에 영향 없음(exit 0).
+ExecStopPost=/home/ubuntu/Daily_30k_bot/deploy/notify_death.sh
 Restart=on-failure
 RestartSec=10
 # N12 (2026-05-04): logs/*.log append → journald 전환. 자동 timestamp(microsecond UTC)

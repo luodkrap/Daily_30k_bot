@@ -52,6 +52,20 @@ class BotState:
     # 4/28~5/4 6일간 run_executor 단독 hang 사건(예외 없음 → 기존 _supervise 가 못 잡음)
     # 재발 방지가 목적. recover_state 내부 throttle sleep 직후에도 갱신.
     executor_heartbeat: float = 0.0
+    # N25 silence watchdog — heartbeat 가 살아있어도 운영 산출물이 끊기면 감지.
+    # equity snapshot 은 30분 주기이므로 supervisor 가 이 값을 별도 progress 로 감시한다.
+    executor_last_snapshot_at: float = 0.0
+    executor_last_trade_at: float = 0.0
+    n25_last_trade_idle_alert_at: float = 0.0
+    # N30: 그리드 진입 실패(setup_grid 초기 매수 미체결 등)가 반복되는 idle 감지.
+    # engine 이 None 인 채 거래에 못 들어가는 상태는 N25 trade-idle(engine 활성 전제) 도,
+    # snapshot watchdog(snapshot 은 정상) 도 못 잡는 사각지대였다 (5/15~ 10일 무거래 사건).
+    executor_grid_idle_since: float = 0.0
+    n30_last_grid_idle_alert_at: float = 0.0
+    # N30: testnet 등에서 일봉이 201개 미만이면 200MA 필터를 계산할 수 없어
+    # update_market_filter 가 조용히 return → is_market_healthy 가 기본값(True)에 동결된다
+    # (5/15 testnet 일봉 20개 사건). 동작은 유지하되 1회만 경고한다.
+    market_filter_unavailable_warned: bool = False
 
     def reset_daily(self) -> None:
         """자정 일일 집계 수치 초기화. run_executor에서 날짜 변경 감지 시 호출."""

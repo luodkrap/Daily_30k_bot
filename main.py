@@ -147,6 +147,8 @@ async def _supervise(
     max_restarts: int = 5,
     watchdog_timeout: float | None = None,
     heartbeat_attr: str | None = None,
+    progress_timeout: float | None = None,
+    progress_attr: str | None = None,
 ) -> None:
     """컴포넌트 코루틴을 감시하고 예외 발생 시 재시작.
 
@@ -156,26 +158,44 @@ async def _supervise(
     ``getattr(state, heartbeat_attr)`` 가 ``watchdog_timeout`` 초 이상 무갱신일 때
     실행 중인 task 를 강제 cancel 하여 TimeoutError 로 변환 → 기존 재시작 경로 재사용.
     예외 없이 영원히 await 에 갇히는 silent hang(2026-04-28~05-04 사건) 대응.
+
+    N25 progress watchdog: heartbeat 가 정상이어도 ``progress_attr`` 가
+    ``progress_timeout`` 초 이상 갱신되지 않으면 같은 재시작 경로를 탄다.
+    executor heartbeat 만으로는 "루프는 도는데 snapshot/trade 산출물이 끊기는" 침묵을
+    놓칠 수 있어 equity snapshot 시각을 별도 감시한다.
     """
     import time
     import config
     restarts = 0
     while not state.kill_event.is_set():
         try:
-            if watchdog_timeout and heartbeat_attr:
+            if (watchdog_timeout and heartbeat_attr) or (progress_timeout and progress_attr):
                 # heartbeat 초기화 — 부팅 직후 stale 값으로 인한 즉시 발동 방지.
-                setattr(state, heartbeat_attr, time.time())
+                now = time.time()
+                if watchdog_timeout and heartbeat_attr:
+                    setattr(state, heartbeat_attr, now)
+                if progress_timeout and progress_attr:
+                    setattr(state, progress_attr, now)
                 task = asyncio.create_task(coro_factory())
                 # 폴링 주기는 watchdog_timeout/4 와 60초 중 작은 값 (반응성 vs CPU 균형).
-                poll_interval = min(60.0, watchdog_timeout / 4)
+                intervals = []
+                if watchdog_timeout:
+                    intervals.append(watchdog_timeout / 4)
+                if progress_timeout:
+                    intervals.append(progress_timeout / 4)
+                poll_interval = min(60.0, *intervals)
                 while not task.done():
                     try:
                         await asyncio.wait_for(asyncio.shield(task), timeout=poll_interval)
                         break  # task 정상 종료
                     except asyncio.TimeoutError:
-                        last = getattr(state, heartbeat_attr, 0.0) or 0.0
-                        idle = time.time() - last
-                        if idle > watchdog_timeout:
+                        now = time.time()
+                        if watchdog_timeout and heartbeat_attr:
+                            last = getattr(state, heartbeat_attr, 0.0) or 0.0
+                            idle = now - last
+                        else:
+                            idle = 0.0
+                        if watchdog_timeout and idle > watchdog_timeout:
                             task.cancel()
                             try:
                                 await task
@@ -185,6 +205,20 @@ async def _supervise(
                                 f"{name} watchdog: heartbeat {idle:.0f}s 무갱신 "
                                 f"(임계 {watchdog_timeout:.0f}s) → 강제 재시작"
                             )
+                        if progress_timeout and progress_attr:
+                            last_progress = getattr(state, progress_attr, 0.0) or 0.0
+                            progress_idle = now - last_progress
+                            if progress_idle > progress_timeout:
+                                task.cancel()
+                                try:
+                                    await task
+                                except (asyncio.CancelledError, Exception):
+                                    pass
+                                raise TimeoutError(
+                                    f"{name} progress watchdog: {progress_attr} "
+                                    f"{progress_idle:.0f}s 무갱신 "
+                                    f"(임계 {progress_timeout:.0f}s) → 강제 재시작"
+                                )
                 # task.done() — 정상 종료 또는 내부 예외
                 exc = task.exception() if not task.cancelled() else None
                 if exc is not None:
@@ -213,16 +247,24 @@ async def _supervise(
 async def main() -> None:
     state = BotState()
     state.is_running = True
-    exchange = ccxt_async.binance({
-        "apiKey": BINANCE_API_KEY,
-        "secret": BINANCE_SECRET_KEY,
-        "enableRateLimit": True,
-    })
-    if MODE == "testnet":
-        exchange.set_sandbox_mode(True)
-        # sandbox 적용 실패 시 실거래로 주문 나가는 참사 방지
-        assert "testnet" in exchange.urls["api"]["public"], \
-            "set_sandbox_mode 적용 실패 — testnet URL 미전환"
+    if MODE == "paper":
+        # paper: mainnet 실시세를 읽는 reader 를 PaperExchange 로 감싸 주문만 가상 체결.
+        # executor/screener 는 거래소 객체 교체만으로 무수정 동작 (덕 타이핑).
+        from paper_exchange import PaperExchange
+        reader = ccxt_async.binance({"enableRateLimit": True})
+        exchange = PaperExchange(reader)
+        exchange.load_state()
+    else:
+        exchange = ccxt_async.binance({
+            "apiKey": BINANCE_API_KEY,
+            "secret": BINANCE_SECRET_KEY,
+            "enableRateLimit": True,
+        })
+        if MODE == "testnet":
+            exchange.set_sandbox_mode(True)
+            # sandbox 적용 실패 시 실거래로 주문 나가는 참사 방지
+            assert "testnet" in exchange.urls["api"]["public"], \
+                "set_sandbox_mode 적용 실패 — testnet URL 미전환"
     state.exchange = exchange
 
     try:
@@ -255,8 +297,11 @@ async def main() -> None:
             # N19: executor 만 watchdog 적용 (10분 무갱신 시 강제 재시작).
             # executor 메인 루프는 1초 간격으로 heartbeat 갱신하므로 600초 무갱신 = 명확한 hang.
             # recover_state 내부도 매 자산 처리 시작점에서 갱신하므로 다중 청산도 안전.
+            # N25: heartbeat 가 살아있어도 equity snapshot 이 45분 이상 끊기면 executor 재시작.
             _supervise("executor", lambda: run_executor(state, exchange), state,
-                       watchdog_timeout=600.0, heartbeat_attr="executor_heartbeat"),
+                       watchdog_timeout=600.0, heartbeat_attr="executor_heartbeat",
+                       progress_timeout=2700.0,
+                       progress_attr="executor_last_snapshot_at"),
             _supervise("telegram", lambda: run_telegram_bot(state), state),
             return_exceptions=True,
         )

@@ -22,9 +22,13 @@ load_dotenv()
 
 # ─── 실행 모드 ────────────────────────────────────────────
 # MODE=live: 바이낸스 실거래. MODE=testnet: testnet.binance.vision 가상 자금.
+# MODE=paper: mainnet 실시세를 읽되 주문은 로컬 가상 체결 (paper_exchange.PaperExchange).
+#   testnet 의 가격 피드 괴리·얇은 호가·짧은 일봉 결함을 회피하고 실시장에서
+#   손실 위험 0 으로 전략을 검증하기 위한 모드 (2026-05-25 추가).
 # 실거래 키와 testnet 키는 별도 환경변수로 분리 관리한다 (혼용 방지).
 MODE = os.getenv("MODE", "live").lower()
-assert MODE in ("live", "testnet"), f"MODE must be 'live' or 'testnet', got {MODE!r}"
+assert MODE in ("live", "testnet", "paper"), \
+    f"MODE must be 'live', 'testnet', or 'paper', got {MODE!r}"
 
 # ─── DB 백엔드 (Phase 7) ─────────────────────────────────
 # sqlite: 로컬 파일 trades.db. 개발·백테스트·기본값.
@@ -39,6 +43,11 @@ SUPABASE_DB_URL  = os.getenv("SUPABASE_DB_URL")  # postgres://...:6543/postgres?
 if MODE == "testnet":
     BINANCE_API_KEY    = os.getenv("BINANCE_TESTNET_API_KEY")
     BINANCE_SECRET_KEY = os.getenv("BINANCE_TESTNET_SECRET_KEY")
+elif MODE == "paper":
+    # paper 는 mainnet public 데이터(fetch_ticker/ohlcv/tickers)만 읽고
+    # 주문은 로컬 가상 체결하므로 API 키가 필요 없다. 있으면 rate limit 상향에만 사용.
+    BINANCE_API_KEY    = os.getenv("BINANCE_API_KEY") or None
+    BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY") or None
 else:
     BINANCE_API_KEY    = os.getenv("BINANCE_API_KEY")
     BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
@@ -96,3 +105,8 @@ INITIAL_BUY_RATIO = 0.50      # 투입금 중 지정가 즉시 매수 비율 50%
 MIN_PROFIT_RATIO  = 0.001     # 최소 순수익 기준 0.1% (수수료 제외 후)
 REGRID_ENABLED    = True      # 상단 이탈 시 리그리딩 ON/OFF
 KRW_RATE          = 1350      # 원/달러 환율 기본값 (실시간 갱신 대상)
+
+# ─── Paper 모드 (MODE=paper) ─────────────────────────────
+# 가상 거래소 상태(잔고·미체결 주문) 영속화 경로 + 시장가 슬리피지 모델.
+PAPER_STATE_PATH  = os.getenv("PAPER_STATE_PATH", "paper_state.json")
+PAPER_SLIPPAGE    = float(os.getenv("PAPER_SLIPPAGE", "0.0005"))  # 시장가 체결 슬리피지 0.05%
