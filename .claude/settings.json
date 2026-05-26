@@ -4,7 +4,8 @@
       "Bash(ls /tmp/*.py 2>/dev/null; echo \"---\"; ls reports/ 2>/dev/null)",
       "Read(//private/tmp/**)",
       "Read(//Users/doulz/**)",
-      "Read(//Users/doulz/Downloads/**)"
+      "Read(//Users/doulz/Downloads/**)",
+      "Bash(git merge *)"
     ]
   },
   "hooks": {
